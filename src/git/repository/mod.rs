@@ -99,6 +99,8 @@ pub(super) struct RepoCache {
     pub(super) is_bare: OnceCell<bool>,
     /// Repository root path (main worktree for normal repos, bare directory for bare repos)
     pub(super) repo_path: OnceCell<PathBuf>,
+    /// Human-readable repository name
+    pub(super) repo_name: OnceCell<String>,
     /// Default branch (main, master, etc.)
     pub(super) default_branch: OnceCell<Option<String>>,
     /// Invalid default branch config (user configured a branch that doesn't exist).
@@ -435,6 +437,34 @@ impl Repository {
                 .parent()
                 .expect("Git directory has no parent")
                 .to_path_buf()
+        })
+    }
+
+    /// A human-readable name for the repository, derived from its path.
+    ///
+    /// For normal repos this is the directory name (e.g., `myproject`).
+    /// For bare repos at `myproject/.git`, this is the parent directory name (`myproject`)
+    /// rather than `.git`. For bare repos like `myproject.git`, the `.git` suffix is stripped.
+    pub fn repo_name(&self) -> &str {
+        self.cache.repo_name.get_or_init(|| {
+            let path = self.repo_path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+
+            // For bare repos at project/.git, use the parent directory name
+            if name == ".git" || name == ".bare" {
+                return path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+            }
+
+            // Strip .git suffix (e.g., myproject.git -> myproject)
+            name.strip_suffix(".git").unwrap_or(name).to_string()
         })
     }
 
