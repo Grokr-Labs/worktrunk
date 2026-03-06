@@ -79,18 +79,6 @@ A demo with some advanced features:
 
 ## Install
 
-**Script installation - Static Binary (macOS & Linux):**
-
-```bash
-curl -fsSL https://worktrunk.dev/install.sh | sh
-```
-
-**Script installation - Static Binary (Windows):**
-
-```bash
-powershell -c "irm https://worktrunk.dev/install.ps1 | iex"
-```
-
 **Homebrew (macOS & Linux):**
 
 ```bash
@@ -124,6 +112,25 @@ Alternatively, disable Windows Terminal's alias (Settings → Privacy & security
 ```bash
 paru worktrunk-bin && wt config shell install
 ```
+
+<details>
+<summary><strong>Script installer (experimental)</strong></summary>
+
+Downloads a static binary — no package manager required.
+
+**macOS & Linux:**
+
+```bash
+curl -fsSL https://worktrunk.dev/install.sh | sh
+```
+
+**Windows:**
+
+```bash
+powershell -c "irm https://worktrunk.dev/install.ps1 | iex"
+```
+
+</details>
 
 ## Quick start
 
