@@ -99,6 +99,18 @@ A demo with some advanced features:
 
 ## Install
 
+**Script installation - Static Binary (macOS & Linux):**
+
+```bash
+curl -fsSL https://worktrunk.dev/install.sh | bash
+```
+
+**Script installation - Static Binary (Windows):**
+
+```bash
+powershell -c "irm http://worktrunk.dev/install.ps1 | iex"
+```
+
 **Homebrew (macOS & Linux):**
 
 ```bash
