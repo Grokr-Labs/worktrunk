@@ -11,6 +11,9 @@
 
 set -euo pipefail
 
+# Prevent gh from emitting ANSI color codes (even in non-TTY contexts).
+export NO_COLOR=1
+
 # Dynamically discover all claude-* workflows instead of maintaining a hardcoded list.
 mapfile -t WORKFLOWS < <(gh workflow list --json name --jq '.[].name | select(startswith("claude-"))')
 
