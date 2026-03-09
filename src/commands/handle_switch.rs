@@ -29,8 +29,10 @@ pub struct SwitchOptions<'a> {
     pub execute_args: &'a [String],
     pub yes: bool,
     pub clobber: bool,
-    /// Whether to change directory after switching (default: true)
-    pub change_dir: bool,
+    /// CLI flag: --cd (force directory change)
+    pub cd: bool,
+    /// CLI flag: --no-cd (force no directory change)
+    pub no_cd: bool,
     pub verify: bool,
 }
 
@@ -171,11 +173,23 @@ pub fn handle_switch(
         execute_args,
         yes,
         clobber,
-        change_dir,
+        cd,
+        no_cd,
         verify,
     } = opts;
 
     let (repo, is_recovered) = current_or_recover().context("Failed to switch worktree")?;
+
+    // Resolve change_dir: explicit CLI flags > project config > global config > default (true)
+    // Now that we have the repo, we can resolve project-specific config.
+    let change_dir = if cd {
+        true
+    } else if no_cd {
+        false
+    } else {
+        let project_id = repo.project_identifier().ok();
+        !config.resolved(project_id.as_deref()).switch.no_cd()
+    };
 
     // Run pre-switch hooks before anything else (before branch validation, planning, etc.)
     // Skip when recovered — the source worktree is gone, nothing to run hooks against.

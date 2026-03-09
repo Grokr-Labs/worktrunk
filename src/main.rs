@@ -491,18 +491,18 @@ fn handle_switch_command(spec: SwitchCommandArgs) -> anyhow::Result<()> {
     UserConfig::load()
         .context("Failed to load config")
         .and_then(|mut config| {
-            // Resolve change_dir: explicit CLI flags > config > default (true)
-            // --cd forces cd, --no-cd forces no cd, otherwise use config
-            let change_dir = if spec.cd {
-                true
-            } else if spec.no_cd {
-                false
-            } else {
-                !config.resolved(None).switch.no_cd()
-            };
-
             // No branch argument: open interactive picker
             let Some(branch) = spec.branch else {
+                // For the picker path, resolve change_dir here since we don't have
+                // a repo yet. Project-specific config is not available in this path.
+                let change_dir = if spec.cd {
+                    true
+                } else if spec.no_cd {
+                    false
+                } else {
+                    !config.resolved(None).switch.no_cd()
+                };
+
                 #[cfg(unix)]
                 {
                     return handle_select(spec.branches, spec.remotes, change_dir);
@@ -511,13 +511,15 @@ fn handle_switch_command(spec: SwitchCommandArgs) -> anyhow::Result<()> {
                 #[cfg(not(unix))]
                 {
                     // Suppress unused variable warnings on Windows
-                    let _ = (spec.branches, spec.remotes);
+                    let _ = (spec.branches, spec.remotes, change_dir);
 
                     print_windows_picker_unavailable();
                     std::process::exit(2);
                 }
             };
 
+            // For direct branch switch, pass raw flags and let handle_switch
+            // resolve change_dir with project-specific config
             handle_switch(
                 SwitchOptions {
                     branch: &branch,
@@ -527,7 +529,8 @@ fn handle_switch_command(spec: SwitchCommandArgs) -> anyhow::Result<()> {
                     execute_args: &spec.execute_args,
                     yes: spec.yes,
                     clobber: spec.clobber,
-                    change_dir,
+                    cd: spec.cd,
+                    no_cd: spec.no_cd,
                     verify: spec.verify,
                 },
                 &mut config,

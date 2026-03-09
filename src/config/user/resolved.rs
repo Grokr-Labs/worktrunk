@@ -6,8 +6,7 @@
 
 use super::UserConfig;
 use super::sections::{
-    CommitConfig, CommitGenerationConfig, ListConfig, MergeConfig, SwitchConfig,
-    SwitchPickerConfig,
+    CommitConfig, CommitGenerationConfig, ListConfig, MergeConfig, SwitchConfig, SwitchPickerConfig,
 };
 
 /// All resolved configuration for a specific project context.
