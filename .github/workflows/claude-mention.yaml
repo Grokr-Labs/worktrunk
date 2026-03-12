@@ -29,16 +29,19 @@ jobs:
     # and where to look; Claude reads the full context itself via gh/skills.
     #
     # Note: secrets cannot be used in job-level `if:` (actions/runner#520) —
-    # doing so causes GitHub to fail the workflow on push validation. For review
-    # comments on fork PRs (which don't receive secrets), we detect forks via
-    # github.event context instead. Use a Conversation tab comment for fork PRs.
+    # doing so causes GitHub to fail the workflow on push validation.
+    #
+    # Unlike `pull_request`, the `pull_request_review_comment` event runs on
+    # the base repo and has access to secrets even for fork PRs — no fork
+    # filter needed. (The `issue_comment` path already works on fork PRs
+    # for the same reason.)
     if: |
       (github.event_name == 'issues' &&
-        contains(github.event.issue.body, '@worktrunk-bot')) ||
+        contains(github.event.issue.body, '@worktrunk-bot') &&
+        github.event.issue.user.login != 'worktrunk-bot') ||
       (github.event_name == 'issue_comment' &&
         github.event.comment.user.login != 'worktrunk-bot') ||
       (github.event_name == 'pull_request_review_comment' &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
         github.event.comment.user.login != 'worktrunk-bot')
     # Job-level concurrency (not workflow-level) so that runs skipped by the
     # `if:` above don't enter the concurrency group. Workflow-level concurrency
@@ -205,11 +208,11 @@ jobs:
               || github.event.comment.html_url
               && (contains(github.event.comment.body, '@worktrunk-bot')
                 && format(
-                  'You were mentioned in a comment ({0}). Read the full issue or PR (description, diff, recent comments, CI status) and respond. If they''re requesting changes, make the changes, commit, and push. If they''re asking a question, answer it.',
+                  'You were mentioned in a comment ({0}). Read the full issue or PR (description, diff, recent comments, CI status) and respond. If they''re requesting changes, make the changes, commit, and push. If they''re asking a question, answer it. When suggesting code changes on a PR, use the review-pr skill for inline suggestions.',
                   github.event.comment.html_url
                 )
                 || format(
-                  'A user commented on an issue/PR where you previously participated ({0}). Read the full context (description, recent comments, CI status). Only respond if the comment is directed at you, asks a question you can help with, or requests changes you can make. If the conversation is between humans and doesn''t need your input, exit silently without commenting. Note: if you are the author of the PR or issue, commenters are probably expecting the author to engage — lean toward responding.',
+                  'A user commented on an issue/PR where you previously participated ({0}). Read the full context (description, recent comments, CI status). Only respond if the comment is directed at you, asks a question you can help with, or requests changes you can make. If the conversation is between humans and doesn''t need your input, exit silently without commenting. Note: if you are the author of the PR or issue, commenters are probably expecting the author to engage — lean toward responding. When suggesting code changes on a PR, use the review-pr skill for inline suggestions.',
                   github.event.comment.html_url
                 ))
               || format(

@@ -40,20 +40,51 @@ When the triggering comment asks for a PR (e.g., "make a new PR", "open a PR",
 "create a PR"), create it directly with `gh pr create`. The comment is the
 user's explicit request — don't downgrade it to a compare link.
 
+### Before creating a PR
+
+**Check for existing work.** Before creating a new branch or PR, check whether
+someone (including the bot) has already opened a PR for the same issue or topic:
+
+```bash
+# Check open PRs — look for related titles and branches
+gh pr list --state open --json number,title,headRefName --jq '.[] | "#\(.number) [\(.headRefName)]: \(.title)"'
+
+# Check for fix branches
+git branch -r --list 'origin/fix/*'
+```
+
+If an existing PR addresses the same problem, work on that PR instead of
+creating a duplicate. Comment on the existing PR or the issue linking to it.
+
+## Pushing to PR Branches
+
+**Always use `git push` without specifying a remote.** The workflow uses
+`gh pr checkout` which configures branch tracking to the correct remote —
+including for fork PRs. Specifying `origin` explicitly bypasses this and can
+push to the wrong place.
+
+If pushing fails (e.g., fork PR with "Allow edits from maintainers" disabled),
+fall back to posting suggested changes as code snippets in a comment.
+
+When posting code from work you did locally, do not reference commit SHAs from
+temporary or deleted branches — those links will 404. Post the code inline
+instead.
+
 ## CI Monitoring
 
 After pushing changes to a PR branch, you **must** wait for CI before saying
 "done" or reporting completion. A push without green CI is not finished work.
 
 1. Push your changes
-2. Run `gh pr checks <number>` once
-3. If all checks passed, report completion
-4. If checks are still running, poll with `gh pr checks <number>` every 60
-   seconds until all checks complete (this may take up to 10 minutes — that's an
-   acceptable tradeoff to ensure the bot reports accurate CI status)
-5. If CI fails, diagnose with `gh run view <run-id> --log-failed`, fix issues,
-   commit, push, and repeat from step 2
-6. Only after all checks pass, report completion
+2. Run `gh pr checks <number> --required` once
+3. If all required checks passed, report completion
+4. If checks are still running, poll with `gh pr checks <number> --required`
+   every 60 seconds until all required checks complete (this may take up to
+   10 minutes). Non-required checks (e.g., benchmarks) are ignored — do not
+   wait for them.
+5. If a required check fails, diagnose with `gh run view <run-id> --log-failed`,
+   fix issues, commit, push, and repeat from step 2
+6. Only after all required checks pass, report completion
 
 **Never** post a "done" or "fixed" comment before CI passes. Local tests alone
 are not sufficient — CI runs on Linux, Windows, and macOS. If you report

@@ -241,9 +241,13 @@ Decide how confident you are in the change:
 PR_AUTHOR=$(gh pr view <number> --json author --jq '.author.login')
 ```
 
-**Self-authored PRs:** If `PR_AUTHOR == BOT_LOGIN`, you cannot approve — GitHub
-rejects self-approvals. Submit as COMMENT when there are concerns, or stay
-silent if there are none.
+**Self-authored PRs:** Bot-authored PRs should always be reviewed with full
+scrutiny — they are more likely to duplicate existing APIs, miss design intent,
+or introduce patterns that diverge from project conventions. If `PR_AUTHOR ==
+BOT_LOGIN`, you cannot approve — GitHub rejects self-approvals. Submit as
+COMMENT when there are concerns, or stay silent if there are none. **If staying
+silent, skip steps 4 (posting) and 6 (resolve threads) — proceed directly to
+step 5 (CI monitoring).**
 
 - **Confident** (small, mechanical, well-tested): Approve.
 - **Moderately confident** (non-trivial but looks correct): Approve.
@@ -278,6 +282,11 @@ author has deep familiarity with the affected code.
 Decreases confidence: new algorithms, concurrency, error handling changes,
 untested paths, author hasn't contributed to the affected module before,
 LLM-generated code (may duplicate existing APIs or miss design intent).
+
+**Form your own opinion independently.** Do not factor in other reviewers'
+comments or approvals when deciding whether to approve. The value of this review
+is as an uncorrelated signal — reflecting others' opinions back adds no
+information. Evaluate the code on its own merits.
 
 **LLM-generated PRs** have a high rate of
 duplicating existing internal APIs because the author lacks codebase context.
@@ -333,16 +342,35 @@ the diff, offer to push a fix commit instead.
 **Correct — inline suggestion on the line:**
 
 `````bash
+cat > /tmp/review-body.md << 'EOF'
+Summary of suggestions
+EOF
+
+cat > /tmp/review-payload.json << 'ENDJSON'
+{
+  "event": "COMMENT",
+  "comments": [
+    {
+      "path": ".claude/skills/example/SKILL.md",
+      "line": 3,
+      "body": "```suggestion\ndescription: new text here\n```"
+    }
+  ]
+}
+ENDJSON
+
+# Read body from file to avoid shell expansion issues
+BODY=$(cat /tmp/review-body.md)
+jq --arg body "$BODY" '.body = $body' /tmp/review-payload.json > /tmp/review-final.json
+
 gh api "repos/$REPO/pulls/<number>/reviews" \
   --method POST \
-  -f event=COMMENT \
-  -f body="Summary of suggestions" \
-  -f 'comments[0][path]=.claude/skills/example/SKILL.md' \
-  -f 'comments[0][line]=3' \
-  -f 'comments[0][body]=```suggestion
-description: new text here
-```'
+  --input /tmp/review-final.json
 `````
+
+**Do not** use `-f 'comments[0][path]=...'` flag syntax — `gh api` converts
+array indices to object keys (`{"0": {...}}` instead of `[{...}]`), which
+GitHub rejects.
 
 - Use suggestions for any small fix — no limit on count.
 - If a review has both suggestions and prose observations, put the suggestions
@@ -357,29 +385,24 @@ description: new text here
 
 ### 5. Monitor CI
 
-If you stayed silent (self-authored PR, no concerns) → **done, stop here.**
-
-After approving, monitor CI using the poll approach from `/running-in-ci`.
+After approving or staying silent, monitor CI using the poll approach from `/running-in-ci`.
 Exclude the current workflow's own check to avoid a circular wait:
 
 ```bash
-gh pr checks <number>
+gh pr checks <number> --required
 ```
 
-Poll with `gh pr checks` every 60 seconds until all checks complete.
+Poll with `gh pr checks <number> --required` every 60 seconds until all
+required checks complete. Non-required checks (e.g., benchmarks) are ignored —
+do not wait for them.
 
 Then verify final status:
 
 ```bash
-gh pr view <number> --json statusCheckRollup \
-  --jq '[.statusCheckRollup[]
-    | select(env.GITHUB_WORKFLOW == null
-             or (.workflowName == env.GITHUB_WORKFLOW | not))]
-    | .[]
-    | {name, status, conclusion}'
+gh pr checks <number> --required
 ```
 
-- **All checks passed** → done, no further action.
+- **All required checks passed** → done, no further action.
 - **A check failed** → if it's a flaky test or unrelated infrastructure
   failure, no action needed. If the failure is related to the PR changes:
   1. Investigate the failure and post a follow-up review (COMMENT) with
@@ -387,11 +410,14 @@ gh pr view <number> --json statusCheckRollup \
      step 4 — no repeated points from previous reviews. **Post the analysis
      first** — if the session times out before dismissing, a stale approval
      (contradicted by red CI) is better than a bare dismissal with no context.
-  2. Dismiss the bot's approval if one exists. Use a short dismiss message
-     summarizing the CI failure (e.g., "CI failed — snapshot tests need
-     updating"). The GitHub API rejects empty dismiss messages, so always
-     provide one. Skip if already dismissed — redundant dismissals create
-     timeline noise.
+  2. Dismiss the bot's approval if one exists. **Use PUT, not POST** — the
+     dismiss endpoint requires it:
+     ```bash
+     gh api "repos/$REPO/pulls/<number>/reviews/$REVIEW_ID/dismissals" \
+       -X PUT -f message="CI failed — <reason>"
+     ```
+     The GitHub API rejects empty dismiss messages, so always provide one.
+     Skip if already dismissed — redundant dismissals create timeline noise.
 
 ### 6. Resolve handled suggestions
 
@@ -454,11 +480,16 @@ gh api graphql -F query=@/tmp/resolve-thread.graphql -f threadId="THREAD_ID"
 Outdated comments (null line) are best-effort — skip if the original context
 can't be located.
 
-### 7. Push mechanical fixes on bot PRs
+### 7. Push mechanical fixes
 
-If the review found concrete, fixable issues on a bot PR (Dependabot, renovate,
-etc.) where there's no human author to act on feedback, commit and push the fix
+**Bot PRs** (Dependabot, renovate, etc.): If the review found concrete, fixable
+issues and there's no human author to act on feedback, commit and push the fix
 directly to the PR branch.
+
+**Human PRs**: Post inline suggestions first (one-click apply is fastest for the
+author). Additionally, **offer to push a commit** when the fixes are mechanical
+and correctness is obvious — e.g., "I can push these changes in a commit if
+you'd like." Only push after the author accepts the offer.
 
 ```bash
 gh pr checkout <number>
@@ -468,6 +499,3 @@ git commit -m "fix: <description>
 Co-Authored-By: Claude <noreply@anthropic.com>"
 git push
 ```
-
-Only do this for mechanical changes where correctness is obvious. For human PRs,
-leave inline suggestions for the author instead.

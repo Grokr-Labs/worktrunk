@@ -467,9 +467,10 @@ fn handle_select_command(branches: bool, remotes: bool) -> anyhow::Result<()> {
 
 #[cfg(not(unix))]
 fn handle_select_command(_branches: bool, _remotes: bool) -> anyhow::Result<()> {
+    use worktrunk::git::WorktrunkError;
     warn_select_deprecated();
     print_windows_picker_unavailable();
-    std::process::exit(1);
+    Err(WorktrunkError::AlreadyDisplayed { exit_code: 1 }.into())
 }
 
 struct SwitchCommandArgs {
@@ -507,11 +508,12 @@ fn handle_switch_command(spec: SwitchCommandArgs) -> anyhow::Result<()> {
 
                 #[cfg(not(unix))]
                 {
+                    use worktrunk::git::WorktrunkError;
                     // Suppress unused variable warnings on Windows
                     let _ = (spec.branches, spec.remotes, change_dir);
 
                     print_windows_picker_unavailable();
-                    std::process::exit(2);
+                    return Err(WorktrunkError::AlreadyDisplayed { exit_code: 2 }.into());
                 }
             };
 
@@ -1027,7 +1029,11 @@ fn main() {
         // for cases not covered by the flag (e.g., external worktree removal).
         let cwd_gone = output::was_cwd_removed() || std::env::current_dir().is_err();
         if cwd_gone {
-            eprintln!("{}", hint_message(cwd_removed_hint()));
+            if let Some(hint) = cwd_removed_hint() {
+                eprintln!("{}", hint_message(hint));
+            } else {
+                eprintln!("{}", info_message("Current directory was removed"));
+            }
         }
 
         // Preserve exit code from child processes (especially for signals like SIGINT)
