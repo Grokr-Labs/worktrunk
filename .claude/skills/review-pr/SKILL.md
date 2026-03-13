@@ -230,6 +230,12 @@ Every comment must be **actionable** — the author can do something with it:
 - **Explain *why*** something should change, not just *what*.
 - **Distinguish severity** — "should fix" vs. "nice to have".
 - **Don't nitpick formatting** — that's what linters are for.
+- **Use GitHub links for file references.** When mentioning files or lines in
+  review bodies or comment prose, use clickable GitHub links — not plain text
+  like `diff.rs:109`. Use permalinks with `HEAD_SHA` for line references:
+  `[diff.rs:109](https://github.com/$REPO/blob/$HEAD_SHA/src/git/repository/diff.rs#L109)`.
+  File-level links can use `blob/main/...`. Inline suggestions already target
+  specific lines, so this applies to prose references to *other* locations.
 
 **Never post a comment with nothing useful to contribute.** If there are no
 issues, the author doesn't need to hear that. Use the LGTM verdict (approve
