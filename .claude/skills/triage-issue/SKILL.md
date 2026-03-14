@@ -104,9 +104,21 @@ fix — go directly to Step 7 and use the "Reproduction test only" or "Could not
 reproduce" comment template. A fix without a reproduction test violates the AD
 FONTES principle established in Step 1.
 
+**What counts as a failing test:** A test that you wrote or modified in Step 5
+that **fails without your fix and passes with it**. Updating existing snapshot
+tests to match a new function signature does NOT count — that's adapting tests
+to your fix, not demonstrating the bug. The test must exercise the buggy
+behavior described in the issue report.
+
+Before proceeding, state:
+1. The test name (e.g., `test_nushell_pwd_error_on_remove`)
+2. The failure output showing the bug is reproduced
+
+If you cannot provide both, go to Step 7.
+
 **Only attempt a fix if ALL of these conditions are met:**
 
-- Bug is clearly reproducible (test written in Step 5 fails)
+- Bug is clearly reproducible (test written in Step 5 fails without the fix)
 - Root cause is understood
 - Fix is localized (1-3 files changed)
 - Confident the fix is correct

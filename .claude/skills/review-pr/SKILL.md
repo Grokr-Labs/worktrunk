@@ -259,6 +259,13 @@ COMMENT when there are concerns, or stay silent if there are none. **If staying
 silent, skip steps 4 (posting) and 6 (resolve threads) — proceed directly to
 step 5 (CI monitoring).**
 
+**Automated triage PRs** (body contains "automated triage" or branch matches
+`fix/issue-*`): These PRs are created by the `triage-issue` skill, which
+requires a reproduction test before writing any fix. Check the diff for a test
+that demonstrates the reported bug. If the PR only has snapshot updates or
+signature-adapting tests but no test that exercises the buggy behavior, flag it
+— the triage bot may have bypassed its gate check.
+
 - **Confident** (small, mechanical, well-tested): Approve.
 - **Moderately confident** (non-trivial but looks correct): Approve.
 
