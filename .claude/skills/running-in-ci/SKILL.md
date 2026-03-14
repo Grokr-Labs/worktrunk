@@ -80,17 +80,19 @@ After pushing changes to a PR branch, you **must** wait for CI before saying
 1. Push your changes
 2. Run `gh pr checks <number> --required` once
 3. If checks are still running, poll with `gh pr checks <number> --required`
-   every 60 seconds until all required checks complete (this may take up to
-   10 minutes). Non-required checks (e.g., benchmarks) are ignored — do not
-   wait for them.
+   every 60 seconds for **at most 10 iterations** (10 minutes). If required
+   checks haven't completed after 10 polls, stop monitoring and report that
+   CI is still pending. Non-required checks (e.g., benchmarks) are ignored —
+   do not wait for them.
 4. If a required check fails, diagnose with `gh run view <run-id> --log-failed`,
    fix issues, commit, push, and repeat from step 2
 5. After all required checks pass, also check `codecov/patch`. Although it is
    marked non-required in GitHub, this repo treats it as mandatory (see
    CLAUDE.md). Run `gh pr checks <number>` (without `--required`) and look for
-   the `codecov/patch` row. If it hasn't completed yet, continue polling every
-   60 seconds. If it fails, investigate and fix the coverage gap before
-   reporting completion.
+   the `codecov/patch` row. If it hasn't completed yet, poll every 60 seconds
+   for **at most 5 additional iterations**. If codecov/patch still hasn't
+   completed after 5 polls, stop — do not continue waiting. If it fails,
+   investigate and fix the coverage gap before reporting completion.
 6. Only after all required checks **and** `codecov/patch` pass, report
    completion
 

@@ -396,8 +396,13 @@ GitHub rejects.
 
 ### 5. Monitor CI
 
-After approving or staying silent, monitor CI using the approach from
-`/running-in-ci`.
+**After COMMENT verdict** (posted concerns without approving): stop here. There
+is no approval to dismiss on CI failure, so monitoring adds no value.
+
+**After approving or staying silent**, monitor CI using the approach from
+`/running-in-ci`. Respect the polling caps defined there — **at most 10
+iterations** for required checks, **at most 5 additional iterations** for
+codecov/patch. Never poll beyond these caps.
 
 - **All required checks passed** → done, no further action.
 - **A check failed** → if it's a flaky test or unrelated infrastructure
