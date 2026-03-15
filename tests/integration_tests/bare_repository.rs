@@ -851,6 +851,54 @@ fn test_bare_repo_bootstrap_first_worktree() {
     assert!(stdout.contains("main"), "Should list main worktree");
 }
 
+/// Regression test for #1279: in nested bare repo layout (project/.git),
+/// the `{{ repo }}` template variable should resolve to the project name,
+/// not ".git".
+#[test]
+fn test_nested_bare_repo_repo_name_not_dot_git() {
+    let test = NestedBareRepoTest::new();
+
+    // Override config to use {{ repo }} in template
+    fs::write(
+        &test.test_config_path,
+        "worktree-path = \"../{{ repo }}.{{ branch | sanitize }}\"\n",
+    )
+    .unwrap();
+
+    // Create main worktree first (bootstrap)
+    let (directive_path, _guard) = directive_file();
+    let mut cmd = wt_command();
+    test.configure_wt_cmd(&mut cmd);
+    configure_directive_file(&mut cmd, &directive_path);
+    cmd.args(["switch", "--create", "main"])
+        .current_dir(test.bare_repo_path());
+    let output = cmd.output().unwrap();
+
+    if !output.status.success() {
+        panic!(
+            "wt switch --create main failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // The worktree should be at project/project.main (repo=project, not .git)
+    // NOT at project/.git.main (which would happen if repo=.git)
+    let expected_path = test.project_path().join("project.main");
+    let wrong_path = test.project_path().join(".git.main");
+
+    assert!(
+        expected_path.exists(),
+        "Expected worktree at {:?} (repo should be 'project', not '.git')",
+        expected_path
+    );
+    assert!(
+        !wrong_path.exists(),
+        "Worktree should NOT use '.git' as repo name: {:?}",
+        wrong_path
+    );
+}
+
 /// Regression test: `wt list` from a `git clone --bare` repo must not run
 /// `git status` on the bare entry. Before the fix, this produced:
 ///   "fatal: this operation must be run in a work tree"
