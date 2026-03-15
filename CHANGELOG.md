@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.29.4
+
+### Improved
+
+- **Destination branch in pre-switch hooks**: `{{ branch }}` in pre-switch hooks now expands to the **destination** branch (as typed by the user) instead of the source worktree's branch. Previously, pre-switch hooks could only see where you were, not where you were going. [Docs](https://worktrunk.dev/hook/) ([#1497](https://github.com/max-sixty/worktrunk/pull/1497), thanks @mayureshwaykole for the discussion in [#1494](https://github.com/max-sixty/worktrunk/issues/1494))
+
+- **LLM tool commands in example config**: `wt config create` now includes double-commented entries for Claude, Codex, opencode, llm, and aichat commands, making them discoverable without reading the docs. [Docs](https://worktrunk.dev/llm-commits/) ([#1531](https://github.com/max-sixty/worktrunk/pull/1531), [#1533](https://github.com/max-sixty/worktrunk/pull/1533))
+
+### Fixed
+
+- **Extra blank line in `config create` output**: The success path printed a blank line between the success message and hint lines, inconsistent with the "already exists" path. ([#1525](https://github.com/max-sixty/worktrunk/pull/1525))
+
+### Documentation
+
+- **Switch docs**: Trimmed upstream tracking paragraph, added missing `pre-switch`/`post-switch` hooks to creation lifecycle, combined GitHub/GitLab sections. ([#1521](https://github.com/max-sixty/worktrunk/pull/1521))
+
+- **List docs**: Restored `--full` prerequisite note for LLM summaries. ([#1517](https://github.com/max-sixty/worktrunk/pull/1517))
+
+- **Experimental badges in headings**: Moved experimental badges from description paragraphs to headings in web docs for cleaner TOC entries. ([#1523](https://github.com/max-sixty/worktrunk/pull/1523))
+
+### Internal
+
+- **CI improvements**: Prevented duplicate inline review comments across cycles, banned blocking `gh pr checks --watch`, fixed verify step for concurrency-cancelled runs, stopped hourly audit from flagging CI polling, added rolling file survey to nightly cleaner. ([#1514](https://github.com/max-sixty/worktrunk/pull/1514), [#1498](https://github.com/max-sixty/worktrunk/pull/1498), [#1519](https://github.com/max-sixty/worktrunk/pull/1519), [#1520](https://github.com/max-sixty/worktrunk/pull/1520), [#1522](https://github.com/max-sixty/worktrunk/pull/1522))
+
+- **Simplified review-pr skill**: Cut metacognitive coaching and collapsed confidence tiers; 504 → 369 lines (−27%). ([#1530](https://github.com/max-sixty/worktrunk/pull/1530))
+
 ## 0.29.3
 
 ### Improved
