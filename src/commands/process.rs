@@ -386,6 +386,46 @@ pub fn generate_removing_path(worktree_path: &Path) -> PathBuf {
     worktree_path.with_file_name(format!("{}.wt-removing-{}", name, timestamp))
 }
 
+/// Clean up stale `.wt-removing-*` directories left by crashed removals.
+///
+/// When `wt remove` is killed after renaming the worktree but before the
+/// background `rm -rf` runs, the staging directory is left behind. This
+/// function scans the parent directory for any such leftovers and removes them.
+///
+/// Best-effort: errors are logged but don't propagate, since stale directories
+/// are a cosmetic nuisance, not a correctness issue.
+pub fn cleanup_stale_removing_dirs(worktree_path: &Path) {
+    let Some(parent) = worktree_path.parent() else {
+        return;
+    };
+    let Some(name) = worktree_path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+
+    let prefix = format!("{}.wt-removing-", name);
+
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(e) => {
+            log::debug!("Failed to read parent dir for stale cleanup: {}", e);
+            return;
+        }
+    };
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let entry_name = entry.file_name();
+        let Some(entry_str) = entry_name.to_str() else {
+            continue;
+        };
+        if entry_str.starts_with(&prefix) {
+            log::debug!("Cleaning up stale removing directory: {}", entry_str);
+            if let Err(e) = fs::remove_dir_all(entry.path()) {
+                log::debug!("Failed to clean up {}: {}", entry_str, e);
+            }
+        }
+    }
+}
+
 /// Build shell command for background removal of a staged (renamed) worktree.
 ///
 /// This is used after the worktree has been renamed to a staging path,
@@ -607,6 +647,34 @@ mod tests {
             "timestamp part should be numeric: {}",
             timestamp_part
         );
+    }
+
+    #[test]
+    fn test_cleanup_stale_removing_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree_path = tmp.path().join("my-project.feature");
+        std::fs::create_dir(&worktree_path).unwrap();
+
+        // Create stale .wt-removing-* directories
+        let stale1 = tmp.path().join("my-project.feature.wt-removing-1000000000");
+        let stale2 = tmp.path().join("my-project.feature.wt-removing-2000000000");
+        std::fs::create_dir(&stale1).unwrap();
+        std::fs::create_dir(&stale2).unwrap();
+        std::fs::write(stale1.join("file.txt"), "stale").unwrap();
+
+        // Create an unrelated directory that should NOT be cleaned up
+        let unrelated = tmp.path().join("other-project.wt-removing-9999");
+        std::fs::create_dir(&unrelated).unwrap();
+
+        cleanup_stale_removing_dirs(&worktree_path);
+
+        // Stale dirs for this worktree should be gone
+        assert!(!stale1.exists());
+        assert!(!stale2.exists());
+        // Unrelated dirs should remain
+        assert!(unrelated.exists());
+        // Original worktree should be untouched
+        assert!(worktree_path.exists());
     }
 
     #[test]

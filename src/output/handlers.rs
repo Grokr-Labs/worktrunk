@@ -16,8 +16,8 @@ use crate::commands::hooks::{
     HookFailureStrategy, execute_hook, prepare_background_hooks, spawn_background_hooks,
 };
 use crate::commands::process::{
-    HookLog, InternalOp, build_remove_command, build_remove_command_staged, generate_removing_path,
-    spawn_detached,
+    HookLog, InternalOp, build_remove_command, build_remove_command_staged,
+    cleanup_stale_removing_dirs, generate_removing_path, spawn_detached,
 };
 use crate::commands::worktree::{BranchDeletionMode, RemoveResult, SwitchBranchInfo, SwitchResult};
 use worktrunk::config::UserConfig;
@@ -55,6 +55,9 @@ fn execute_instant_removal_or_fallback(
     branch_to_delete: Option<&str>,
     force_worktree: bool,
 ) -> String {
+    // Clean up any stale .wt-removing-* directories from previously crashed removals.
+    cleanup_stale_removing_dirs(worktree_path);
+
     // Fast path: instant removal via rename-then-prune.
     // Rename worktree to staging path (instant on same filesystem), then prune
     // git metadata. Background process just does `rm -rf` on the staged directory.
