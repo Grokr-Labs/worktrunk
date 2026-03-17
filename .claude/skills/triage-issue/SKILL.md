@@ -110,6 +110,10 @@ FONTES principle established in Step 1.
 - Root cause is understood
 - Fix is localized (1-3 files changed)
 - Confident the fix is correct
+- Fix is minimal — change only what is necessary. For documentation/ordering
+  fixes, preserve existing prose exactly; reorder or move sections without
+  rewriting their content. Avoid adding annotations, rewording descriptions,
+  or expanding scope beyond what the issue reported.
 
 ### Skill text fixes
 
