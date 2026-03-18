@@ -15,6 +15,9 @@ skill gaps, and workflow issues — then create PRs or issues to fix them.
 Run `.github/scripts/list-recent-runs.sh` for recently completed Claude CI runs.
 If empty, report "no runs to review" and exit.
 
+Include `claude-hourly-review-reviewers` runs — self-analysis is intentional so
+we can catch bugs in the reviewer itself.
+
 ## Step 2: Download and analyze session logs
 
 ```bash
