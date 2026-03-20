@@ -11,7 +11,6 @@ use crate::common::{
     wait_for_file, wait_for_file_content, wait_for_file_count,
 };
 use insta_cmd::assert_cmd_snapshot;
-use path_slash::PathExt as _;
 use rstest::rstest;
 use std::fs;
 use std::thread;
@@ -1972,16 +1971,17 @@ echo '{{ source_worktree_path }}' > {{ source_worktree_path }}/pre_switch_source
     );
 
     // {{ worktree_path }} should be the destination worktree.
-    // Compare directory names for cross-platform safety: on Windows, template
-    // vars are POSIX-converted (/c/Users/...) while PathBuf is native (C:\...).
+    // Compare directory names: on Windows, template vars are cygpath-converted
+    // (/c/Users/...) while PathBuf is native (C:\...), so full paths won't match.
     let dest_file = repo.root_path().join("pre_switch_dest.txt");
     assert!(dest_file.exists(), "Hook should have written dest marker");
     let dest_contents = fs::read_to_string(&dest_file).unwrap();
-    let expected_dest = feature_wt.to_slash_lossy();
-    assert_eq!(
+    let expected_dest_name = feature_wt.file_name().unwrap().to_string_lossy();
+    assert!(
+        dest_contents.trim().ends_with(expected_dest_name.as_ref()),
+        "{{{{ worktree_path }}}} should end with destination worktree name '{}', got: '{}'",
+        expected_dest_name,
         dest_contents.trim(),
-        expected_dest.as_ref(),
-        "{{{{ worktree_path }}}} should be the destination worktree path"
     );
 
     // {{ source_worktree_path }} should be the source (main) worktree
@@ -1991,11 +1991,12 @@ echo '{{ source_worktree_path }}' > {{ source_worktree_path }}/pre_switch_source
         "Hook should have written source marker"
     );
     let source_contents = fs::read_to_string(&source_file).unwrap();
-    let expected_source = repo.root_path().to_slash_lossy();
-    assert_eq!(
+    let expected_source_name = repo.root_path().file_name().unwrap().to_string_lossy();
+    assert!(
+        source_contents.trim().ends_with(expected_source_name.as_ref()),
+        "{{{{ source_worktree_path }}}} should end with source worktree name '{}', got: '{}'",
+        expected_source_name,
         source_contents.trim(),
-        expected_source.as_ref(),
-        "{{{{ source_worktree_path }}}} should be the source worktree path"
     );
 }
 
