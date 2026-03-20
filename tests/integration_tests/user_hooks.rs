@@ -1993,7 +1993,9 @@ echo '{{ source_worktree_path }}' > {{ source_worktree_path }}/pre_switch_source
     let source_contents = fs::read_to_string(&source_file).unwrap();
     let expected_source_name = repo.root_path().file_name().unwrap().to_string_lossy();
     assert!(
-        source_contents.trim().ends_with(expected_source_name.as_ref()),
+        source_contents
+            .trim()
+            .ends_with(expected_source_name.as_ref()),
         "{{{{ source_worktree_path }}}} should end with source worktree name '{}', got: '{}'",
         expected_source_name,
         source_contents.trim(),
