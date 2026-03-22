@@ -33,8 +33,10 @@ PR_AUTHOR=$(gh pr view <number> --json author --jq '.author.login')
 # Uses "| length > 0" instead of "!= \"\"" to avoid bash ! history expansion.
 # IMPORTANT: `gh pr view --json reviews` returns `.commit.oid` (NOT `.commit_id`).
 # The REST API (`gh api .../reviews`) uses `.commit_id` — don't confuse the two.
-LAST_REVIEW_SHA=$(gh pr view <number> --json reviews \
-  --jq "[.reviews[] | select(.author.login == \"$BOT_LOGIN\" and (.body | length > 0 or .state == \"APPROVED\"))] | last | .commit.oid // empty")
+LAST_REVIEW=$(gh pr view <number> --json reviews \
+  --jq "[.reviews[] | select(.author.login == \"$BOT_LOGIN\" and (.body | length > 0 or .state == \"APPROVED\"))] | last | {sha: (.commit.oid // empty), state: (.state // empty)}")
+LAST_REVIEW_SHA=$(echo "$LAST_REVIEW" | jq -r '.sha // empty')
+LAST_REVIEW_STATE=$(echo "$LAST_REVIEW" | jq -r '.state // empty')
 ```
 
 If `LAST_REVIEW_SHA == HEAD_SHA`, this commit has already been reviewed — exit
@@ -50,12 +52,20 @@ gh api "repos/$REPO/compare/$LAST_REVIEW_SHA...$HEAD_SHA" \
   --jq '{total: ([.files[] | .additions + .deletions] | add), files: [.files[] | "\(.filename)\t+\(.additions)/-\(.deletions)"]}'
 ```
 
-If the incremental changes are trivial, skip the full review **and do not
-submit a new approval** — the existing review stands. Go directly to step 7 to
-resolve any bot threads addressed by the new changes, then exit. Do NOT proceed
+If the incremental changes are trivial, skip the full review — go directly to
+step 7 to resolve any bot threads addressed by the new changes. Do NOT proceed
 to steps 2, 3, or 4. Rough heuristic: changes under ~20 added+deleted lines
 that don't introduce new functions, types, or control flow are typically
 trivial.
+
+After resolving threads, check `LAST_REVIEW_STATE`:
+- **`APPROVED`** — the existing approval stands, do not submit a new one. Exit.
+- **`COMMENTED`** (or any non-APPROVED state) — the prior review requested
+  changes that the trivial follow-up now addresses. Submit an approval:
+  ```bash
+  gh pr review <number> --approve -b ""
+  ```
+  Then proceed to step 6 (monitor CI).
 
 Then read all previous bot feedback and conversation:
 
