@@ -279,6 +279,12 @@ find the mechanism rather than saying "this may be related." Never claim a
 failure is "pre-existing" without checking main branch CI history. Distinguish
 what you verified from what you inferred.
 
+When a conversation or issue references a PR, **check whether the PR is
+merged** (`gh pr view <number> --json state`) before describing its changes as
+available features. Unmerged PRs are proposals, not shipped code — verify
+against the current codebase (`grep`, `Read`) before telling users a feature
+exists.
+
 ## Tone
 
 Raise observations, don't assign work. Never create checklists or task lists
