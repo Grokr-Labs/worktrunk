@@ -101,8 +101,13 @@ exit 1
    echo "codecov/patch not reported after 5 minutes"
    exit 1
    ```
-   If it fails, investigate with `task coverage` and
-   `cargo llvm-cov report --show-missing-lines | grep <file>`.
+   If it fails, check codecov's PR comment first — it lists exactly which
+   files and lines lack coverage. If the uncovered lines are in
+   platform-specific code (`#[cfg(unix)]`), interactive TUI code, or test
+   infrastructure that CI doesn't exercise, conclude it's a false positive
+   without running local coverage. Only fall back to `task coverage` and
+   `cargo llvm-cov report --show-missing-lines | grep <file>` when the
+   uncovered lines are in core logic that should be testable.
 4. Report completion only after all required checks **and** `codecov/patch` pass.
 
 Never report "done" before CI passes — CI runs on Linux, Windows, and macOS.
