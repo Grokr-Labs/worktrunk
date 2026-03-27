@@ -114,6 +114,28 @@ EOF
 
 This catches issues locally before pushing — like running CI locally.
 
+## Manual commit messages
+
+The `commit.generation.command` receives the rendered prompt on stdin and returns the commit message on stdout. To write commit messages by hand instead of using an LLM, point it at `$EDITOR`:
+
+```toml
+# ~/.config/worktrunk/config.toml
+[commit.generation]
+command = '''f=$(mktemp); printf '\n\n' > "$f"; sed 's/^/# /' >> "$f"; ${EDITOR:-vi} "$f" < /dev/tty > /dev/tty; grep -v '^#' "$f"'''
+```
+
+This comments out the rendered prompt (diff, branch name, stats) with `#` prefixes, opens your editor, and strips comment lines on save. A couple of blank lines at the top give you space to type; the prompt context is visible below for reference.
+
+To keep the LLM as default but use the editor for a specific merge, add a [worktrunk alias](@/step.md#aliases):
+
+```toml
+# ~/.config/worktrunk/config.toml
+[aliases]
+mc = '''WORKTRUNK_COMMIT__GENERATION__COMMAND='f=$(mktemp); printf "\n\n" > "$f"; sed "s/^/# /" >> "$f"; ${EDITOR:-vi} "$f" < /dev/tty > /dev/tty; grep -v "^#" "$f"' wt merge'''
+```
+
+Then `wt step mc` opens an editor for the commit message while plain `wt merge` continues to use the LLM.
+
 ## Track agent status
 
 Custom emoji markers show agent state in `wt list`. The Claude Code plugin sets these automatically:
@@ -154,7 +176,7 @@ With `summary = true` and [`commit.generation`](@/config.md#commit) configured, 
 summary = true
 ```
 
-Disabled by default — when enabled, each branch's diff is sent to the configured LLM for summarization. See [LLM Commits](@/llm-commits.md#branch-summaries-experimental) for details.
+Disabled by default — when enabled, each branch's diff is sent to the configured LLM for summarization. See [LLM Commits](@/llm-commits.md#branch-summaries) for details.
 
 ## JSON API
 
@@ -340,7 +362,16 @@ alias wtlog='f() { tail -f "$(wt config state logs get --hook="$1")"; }; f'
 
 ## Bare repository layout
 
-An alternative to the default sibling layout (`myproject.feature/`) uses a bare repository with worktrees as subdirectories:
+A [bare repository](https://git-scm.com/docs/gitrepository-layout) has no working tree, so all branches — including the default — are [linked worktrees](https://git-scm.com/docs/git-worktree) at equal paths. No branch gets special treatment.
+
+Cloning a bare repo into `<project>/.git` puts all worktrees under one directory:
+
+```bash
+git clone --bare <url> myproject/.git
+cd myproject
+```
+
+With `worktree-path = "{{ repo_path }}/../{{ branch | sanitize }}"`, worktrees become subdirectories of `myproject/`:
 
 ```
 myproject/
@@ -350,18 +381,11 @@ myproject/
 └── bugfix/     # bugfix branch
 ```
 
-Setup:
-
-```bash
-git clone --bare <url> myproject/.git
-cd myproject
-```
-
-Configure worktrunk to create worktrees as subdirectories:
+Configure worktrunk:
 
 ```toml
 # ~/.config/worktrunk/config.toml
-worktree-path = "../{{ branch | sanitize }}"
+worktree-path = "{{ repo_path }}/../{{ branch | sanitize }}"
 ```
 
 Create the first worktree:

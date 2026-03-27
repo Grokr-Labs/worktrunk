@@ -7,7 +7,9 @@ use worktrunk::styling::{
 };
 
 use super::command_executor::CommandContext;
-use super::hooks::{HookCommandSpec, HookFailureStrategy};
+use super::hooks::{
+    HookCommandSpec, HookFailureStrategy, prepare_background_hooks, spawn_prepared_hooks,
+};
 use super::repository_ext::RepositoryCliExt;
 
 // Re-export StageMode from config for use by CLI
@@ -157,12 +159,12 @@ impl CommitOptions<'_> {
     pub fn commit(self) -> anyhow::Result<()> {
         let project_config = self.ctx.repo.load_project_config()?;
         let user_hooks = self.ctx.config.hooks(self.ctx.project_id().as_deref());
-        let user_hooks_exist = user_hooks.pre_commit.is_some();
-        let project_hooks_exist = project_config
-            .as_ref()
-            .map(|c| c.hooks.pre_commit.is_some())
-            .unwrap_or(false);
-        let any_hooks_exist = user_hooks_exist || project_hooks_exist;
+        let (user_cfg, proj_cfg) = super::hooks::lookup_hook_configs(
+            &user_hooks,
+            project_config.as_ref(),
+            HookType::PreCommit,
+        );
+        let any_hooks_exist = user_cfg.is_some() || proj_cfg.is_some();
 
         // Show skip message
         if !self.verify && any_hooks_exist {
@@ -183,10 +185,8 @@ impl CommitOptions<'_> {
             super::hooks::run_hook_with_filter(
                 self.ctx,
                 HookCommandSpec {
-                    user_config: user_hooks.pre_commit.as_ref(),
-                    project_config: project_config
-                        .as_ref()
-                        .and_then(|c| c.hooks.pre_commit.as_ref()),
+                    user_config: user_cfg,
+                    project_config: proj_cfg,
                     hook_type: HookType::PreCommit,
                     extra_vars: &extra_vars,
                     name_filter: None,
@@ -229,7 +229,21 @@ impl CommitOptions<'_> {
             true, // show_progress
             self.show_no_squash_note,
             self.stage_mode,
-        )
+        )?;
+
+        // Spawn post-commit hooks in background (respects --no-verify)
+        if self.verify {
+            let extra_vars: Vec<(&str, &str)> = self
+                .target_branch
+                .into_iter()
+                .map(|target| ("target", target))
+                .collect();
+            let hooks =
+                prepare_background_hooks(self.ctx, HookType::PostCommit, &extra_vars, None)?;
+            spawn_prepared_hooks(self.ctx, hooks)?;
+        }
+
+        Ok(())
     }
 }
 

@@ -8,8 +8,9 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::merge::Merge;
+use super::merge::{Merge, merge_optional};
 use crate::config::HooksConfig;
+use crate::config::commands::CommandConfig;
 
 /// What to stage before committing
 #[derive(
@@ -45,7 +46,7 @@ pub struct CommitGenerationConfig {
     ///
     /// Examples:
     /// - `"llm -m claude-haiku-4.5"`
-    /// - `"MAX_THINKING_TOKENS=0 claude -p --model=haiku"`
+    /// - `"MAX_THINKING_TOKENS=0 claude -p --no-session-persistence --model=haiku"`
     ///
     /// The command receives the prompt via stdin and should output the commit message.
     #[serde(default)]
@@ -135,10 +136,17 @@ pub struct ListConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<bool>,
 
-    /// (Experimental) Per-task timeout in milliseconds.
-    /// When set to a positive value, git operations that exceed this timeout are terminated.
-    /// Timed-out tasks show defaults in the table. Set to 0 to explicitly disable timeout
+    /// Per-task timeout in milliseconds.
+    /// Kills individual git commands that exceed this duration. Applies to both
+    /// `wt list` and the `wt switch` picker. Set to 0 to explicitly disable
     /// (useful to override a global setting). Disabled when --full is used.
+    #[serde(rename = "task-timeout-ms", skip_serializing_if = "Option::is_none")]
+    pub task_timeout_ms: Option<u64>,
+
+    /// Wall-clock budget for the entire collect phase in milliseconds.
+    /// Tasks that complete within the budget contribute data; tasks still
+    /// running when it expires are abandoned silently. Set to 0 to disable.
+    /// Disabled when --full is used. Default: no budget (wait for all results).
     #[serde(rename = "timeout-ms", skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 }
@@ -164,9 +172,20 @@ impl ListConfig {
         self.summary.unwrap_or(false)
     }
 
-    /// Per-task timeout in milliseconds (default: None)
-    pub fn timeout_ms(&self) -> Option<u64> {
+    /// Per-task command timeout (default: None — no per-command timeout).
+    /// Returns `None` when disabled (task_timeout_ms = 0 or unset).
+    pub fn task_timeout(&self) -> Option<std::time::Duration> {
+        self.task_timeout_ms
+            .filter(|&ms| ms > 0)
+            .map(std::time::Duration::from_millis)
+    }
+
+    /// Wall-clock budget for the collect phase (default: None — no budget).
+    /// Returns `None` when disabled (timeout_ms = 0 or unset).
+    pub fn timeout(&self) -> Option<std::time::Duration> {
         self.timeout_ms
+            .filter(|&ms| ms > 0)
+            .map(std::time::Duration::from_millis)
     }
 }
 
@@ -177,6 +196,7 @@ impl Merge for ListConfig {
             branches: other.branches.or(self.branches),
             remotes: other.remotes.or(self.remotes),
             summary: other.summary.or(self.summary),
+            task_timeout_ms: other.task_timeout_ms.or(self.task_timeout_ms),
             timeout_ms: other.timeout_ms.or(self.timeout_ms),
         }
     }
@@ -246,6 +266,10 @@ pub struct MergeConfig {
     /// Run project hooks (default: true)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify: Option<bool>,
+
+    /// Create a merge commit instead of fast-forwarding (default: false)
+    #[serde(rename = "no-ff", skip_serializing_if = "Option::is_none")]
+    pub no_ff: Option<bool>,
 }
 
 impl MergeConfig {
@@ -273,6 +297,11 @@ impl MergeConfig {
     pub fn verify(&self) -> bool {
         self.verify.unwrap_or(true)
     }
+
+    /// Create a merge commit instead of fast-forwarding (default: false)
+    pub fn no_ff(&self) -> bool {
+        self.no_ff.unwrap_or(false)
+    }
 }
 
 impl Merge for MergeConfig {
@@ -283,6 +312,7 @@ impl Merge for MergeConfig {
             rebase: other.rebase.or(self.rebase),
             remove: other.remove.or(self.remove),
             verify: other.verify.or(self.verify),
+            no_ff: other.no_ff.or(self.no_ff),
         }
     }
 }
@@ -320,14 +350,14 @@ pub struct SwitchPickerConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pager: Option<String>,
 
-    /// Picker command timeout in milliseconds.
+    /// Wall-clock budget for picker data collection in milliseconds.
     ///
-    /// Controls how long to wait for git commands when populating the picker.
-    /// Commands that exceed this timeout fail silently (data not shown).
+    /// Controls how long the picker waits for git data before displaying.
+    /// Tasks still running when the budget expires are abandoned.
     ///
-    /// - Unset: 200ms default
-    /// - `0`: No timeout
-    /// - Positive value: Custom timeout in milliseconds
+    /// - Unset: 500ms default
+    /// - `0`: No budget (wait for all results)
+    /// - Positive value: Custom budget in milliseconds
     #[serde(rename = "timeout-ms", skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 }
@@ -338,17 +368,13 @@ impl SwitchPickerConfig {
         self.pager.as_deref()
     }
 
-    /// Command timeout for the picker.
-    ///
-    /// Returns `None` when timeout is disabled (timeout_ms = 0),
-    /// the configured timeout, or the 200ms default. The 200ms default
-    /// aggressively cuts tail latency so the TUI appears near-instantly;
-    /// users on large repos can raise it via `timeout-ms`.
-    pub fn picker_command_timeout(&self) -> Option<std::time::Duration> {
+    /// Wall-clock budget for picker data collection (default: 500ms).
+    /// Returns `None` when disabled (timeout_ms = 0).
+    pub fn timeout(&self) -> Option<std::time::Duration> {
         match self.timeout_ms {
             Some(0) => None,
             Some(ms) => Some(std::time::Duration::from_millis(ms)),
-            None => Some(std::time::Duration::from_millis(200)),
+            None => Some(std::time::Duration::from_millis(500)),
         }
     }
 }
@@ -365,20 +391,85 @@ impl Merge for SwitchPickerConfig {
 /// Configuration for the `wt switch` command
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, JsonSchema)]
 pub struct SwitchConfig {
+    /// Skip directory change after switch (equivalent to --no-cd)
+    #[serde(rename = "no-cd", default, skip_serializing_if = "Option::is_none")]
+    pub no_cd: Option<bool>,
+
     /// Picker settings for the interactive selector
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picker: Option<SwitchPickerConfig>,
 }
 
+impl SwitchConfig {
+    /// Skip directory change (default: false)
+    pub fn no_cd(&self) -> bool {
+        self.no_cd.unwrap_or(false)
+    }
+}
+
 impl Merge for SwitchConfig {
     fn merge_with(&self, other: &Self) -> Self {
         Self {
+            no_cd: other.no_cd.or(self.no_cd),
             picker: match (&self.picker, &other.picker) {
                 (None, None) => None,
                 (Some(s), None) => Some(s.clone()),
                 (None, Some(o)) => Some(o.clone()),
                 (Some(s), Some(o)) => Some(s.merge_with(o)),
             },
+        }
+    }
+}
+
+/// Configuration for `wt step copy-ignored`
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, JsonSchema)]
+pub struct CopyIgnoredConfig {
+    /// Gitignore-style patterns to exclude from `wt step copy-ignored`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+}
+
+impl CopyIgnoredConfig {
+    pub fn merged_with(&self, other: &Self) -> Self {
+        let mut exclude = self.exclude.clone();
+        for pattern in &other.exclude {
+            if !exclude.contains(pattern) {
+                exclude.push(pattern.clone());
+            }
+        }
+        Self { exclude }
+    }
+}
+
+impl Merge for CopyIgnoredConfig {
+    fn merge_with(&self, other: &Self) -> Self {
+        self.merged_with(other)
+    }
+}
+
+/// Configuration for `wt step` subcommands.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, JsonSchema)]
+pub struct StepConfig {
+    /// Configuration for `wt step copy-ignored`.
+    #[serde(
+        default,
+        rename = "copy-ignored",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub copy_ignored: Option<CopyIgnoredConfig>,
+}
+
+impl StepConfig {
+    /// Returns the resolved copy-ignored config, defaulting to empty if unset.
+    pub fn copy_ignored(&self) -> CopyIgnoredConfig {
+        self.copy_ignored.clone().unwrap_or_default()
+    }
+}
+
+impl Merge for StepConfig {
+    fn merge_with(&self, other: &Self) -> Self {
+        Self {
+            copy_ignored: merge_optional(self.copy_ignored.as_ref(), other.copy_ignored.as_ref()),
         }
     }
 }
@@ -426,14 +517,25 @@ pub struct OverridableConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch: Option<SwitchConfig>,
 
+    /// Configuration for `wt step` subcommands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<StepConfig>,
+
     /// **DEPRECATED**: Use `[switch.picker]` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub select: Option<SelectConfig>,
 
     /// \[experimental\] Command aliases for `wt step <name>`.
     ///
-    /// Each alias maps a name to a command template. All hook template variables
-    /// are available (e.g., `{{ branch }}`, `{{ worktree_path }}`).
+    /// Each alias maps a name to one or more command templates. All hook
+    /// template variables are available (e.g., `{{ branch }}`, `{{ worktree_path }}`).
+    ///
+    /// Per-project aliases append to global aliases on name collision (global
+    /// first, then per-project), matching hook merge semantics.
+    ///
+    /// Uses `CommandConfig` for consistency with hooks. This means the
+    /// named-table format (`[aliases.deploy] build = "..." run = "..."`)
+    /// technically works, but the single-string format is the expected usage.
     ///
     /// ```toml
     /// [aliases]
@@ -441,7 +543,7 @@ pub struct OverridableConfig {
     /// lint = "npm run lint"
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aliases: Option<BTreeMap<String, String>>,
+    pub aliases: Option<BTreeMap<String, CommandConfig>>,
 }
 
 impl OverridableConfig {
@@ -455,6 +557,7 @@ impl OverridableConfig {
             && self.commit.is_none()
             && self.merge.is_none()
             && self.switch.is_none()
+            && self.step.is_none()
             && self.select.is_none()
             && self.aliases.is_none()
     }
@@ -474,24 +577,28 @@ impl Merge for OverridableConfig {
             commit: merge_optional(self.commit.as_ref(), other.commit.as_ref()),
             merge: merge_optional(self.merge.as_ref(), other.merge.as_ref()),
             switch: merge_optional(self.switch.as_ref(), other.switch.as_ref()),
+            step: merge_optional(self.step.as_ref(), other.step.as_ref()),
             select: merge_optional(self.select.as_ref(), other.select.as_ref()),
-            aliases: merge_alias_maps(&self.aliases, &other.aliases),
+            aliases: merge_alias_maps(&self.aliases, &other.aliases), // Append semantics
         }
     }
 }
 
-/// Merge two optional alias maps. Other's entries override base on collision.
+/// Merge two optional alias maps using append semantics.
+///
+/// Both base and other aliases run on name collision (base first, then other),
+/// matching how `HooksConfig::merge_with` appends hooks.
 fn merge_alias_maps(
-    base: &Option<BTreeMap<String, String>>,
-    other: &Option<BTreeMap<String, String>>,
-) -> Option<BTreeMap<String, String>> {
+    base: &Option<BTreeMap<String, CommandConfig>>,
+    other: &Option<BTreeMap<String, CommandConfig>>,
+) -> Option<BTreeMap<String, CommandConfig>> {
     match (base, other) {
         (None, None) => None,
         (Some(b), None) => Some(b.clone()),
         (None, Some(o)) => Some(o.clone()),
         (Some(b), Some(o)) => {
             let mut merged = b.clone();
-            merged.extend(o.iter().map(|(k, v)| (k.clone(), v.clone())));
+            crate::config::commands::append_aliases(&mut merged, o);
             Some(merged)
         }
     }
@@ -538,7 +645,7 @@ pub struct UserProjectOverrides {
     )]
     pub commit_generation: Option<CommitGenerationConfig>,
 
-    /// Per-project overrides (worktree-path, list, commit, merge, switch, select)
+    /// Per-project overrides (worktree-path, list, commit, merge, switch, step, select)
     #[serde(flatten, default)]
     pub overrides: OverridableConfig,
 }
@@ -564,25 +671,35 @@ mod tests {
 
     #[test]
     fn test_merge_alias_maps_base_only() {
-        let base = BTreeMap::from([("a".into(), "1".into())]);
+        let base = BTreeMap::from([("a".into(), CommandConfig::single("1"))]);
         let result = merge_alias_maps(&Some(base.clone()), &None);
         assert_eq!(result, Some(base));
     }
 
     #[test]
     fn test_merge_alias_maps_other_only() {
-        let other = BTreeMap::from([("b".into(), "2".into())]);
+        let other = BTreeMap::from([("b".into(), CommandConfig::single("2"))]);
         let result = merge_alias_maps(&None, &Some(other.clone()));
         assert_eq!(result, Some(other));
     }
 
     #[test]
-    fn test_merge_alias_maps_other_overrides_base() {
-        let base = BTreeMap::from([("a".into(), "1".into()), ("shared".into(), "base".into())]);
-        let other = BTreeMap::from([("b".into(), "2".into()), ("shared".into(), "other".into())]);
+    fn test_merge_alias_maps_appends_on_collision() {
+        let base = BTreeMap::from([
+            ("a".into(), CommandConfig::single("1")),
+            ("shared".into(), CommandConfig::single("base-cmd")),
+        ]);
+        let other = BTreeMap::from([
+            ("b".into(), CommandConfig::single("2")),
+            ("shared".into(), CommandConfig::single("other-cmd")),
+        ]);
         let result = merge_alias_maps(&Some(base), &Some(other)).unwrap();
-        assert_eq!(result["a"], "1");
-        assert_eq!(result["b"], "2");
-        assert_eq!(result["shared"], "other");
+        assert_eq!(result["a"].commands().count(), 1);
+        assert_eq!(result["b"].commands().count(), 1);
+        // Collision: both commands are preserved (base first, then other)
+        let shared: Vec<_> = result["shared"].commands().collect();
+        assert_eq!(shared.len(), 2);
+        assert_eq!(shared[0].template, "base-cmd");
+        assert_eq!(shared[1].template, "other-cmd");
     }
 }

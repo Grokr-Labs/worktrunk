@@ -49,11 +49,11 @@ let output = wt_command()
 
 ### Method reference
 
-| Method | Use when |
-|--------|----------|
-| `repo.wt_command()` | Running wt commands with a TestRepo |
-| `wt_command()` | Running wt without a TestRepo (free function) |
-| `repo.git_command()` | Running git commands |
+| Method | Returns | Use when |
+|--------|---------|----------|
+| `repo.wt_command()` | `Command` | Running wt commands with a TestRepo |
+| `wt_command()` | `Command` | Running wt without a TestRepo (free function) |
+| `repo.git_command()` | `Cmd` | Running git commands (use `.run()` not `.output()`) |
 
 ## Timing Tests: Long Timeouts with Fast Polling
 
@@ -287,6 +287,14 @@ For environment-dependent tests, use `Command::new()` with `.env()` to set varia
 
 ## Test Style
 
+### Snapshot env drift is cosmetic
+
+`insta_cmd` snapshots record the test's environment variables in an `env:` block.
+When test infrastructure changes add or reorder env vars (e.g., `NO_COLOR: ""`
+appearing in a snapshot that didn't have it before), the snapshot diff includes
+those lines even though the test output is unchanged. This is cosmetic drift —
+accept it without comment during review.
+
 ### Inline snapshots over multi-assert
 
 When a test checks formatted output, use `insta::assert_snapshot!` with an
@@ -311,6 +319,16 @@ using the qualified `insta::assert_snapshot!` form.
 
 For first-time snapshot creation, leave the inline value empty (`@""`), then
 run `cargo insta test --accept` to fill it.
+
+To update existing file-based snapshots (e.g., after editing CLI help text),
+use `cargo insta test --accept`:
+
+```bash
+cargo insta test --accept -- --test integration "test_help"
+```
+
+Do not manually edit `.snap` files — they contain ANSI escape sequences that
+are difficult to reproduce by hand.
 
 ### One test per belief
 
@@ -362,10 +380,10 @@ Tests use `TEST_EPOCH` (2025-01-01) for reproducible timestamps. The constant is
 ```rust
 use crate::common::TEST_EPOCH;
 
-repo.git_command(&[
+repo.run_git(&[
     "config", "worktrunk.state.feature.ci-status",
     &format!(r#"{{"checked_at":{TEST_EPOCH},"head":"abc123"}}"#),
 ]);
 ```
 
-**For production code** that needs timestamps, use `worktrunk::utils::get_now()` which respects `WORKTRUNK_TEST_EPOCH`. Using `SystemTime::now()` directly causes flaky tests.
+**For production code** that needs timestamps, use `worktrunk::utils::epoch_now()` which respects `WORKTRUNK_TEST_EPOCH`. Using `SystemTime::now()` directly causes flaky tests.
