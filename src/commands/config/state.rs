@@ -816,8 +816,7 @@ fn handle_state_show_table(repo: &Repository) -> anyhow::Result<()> {
                 })
             })
             .collect();
-        let rendered =
-            crate::md_help::render_data_table(&["Branch", "Key", "Value"], &rows);
+        let rendered = crate::md_help::render_data_table(&["Branch", "Key", "Value"], &rows);
         writeln!(out, "{}", rendered.trim_end())?;
     }
     writeln!(out)?;
