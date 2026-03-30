@@ -160,23 +160,6 @@ impl GitRemoteUrl {
     }
 }
 
-/// Extract owner from a git remote URL.
-///
-/// Used for client-side filtering of PRs/MRs by source repository. When multiple users
-/// have PRs with the same branch name (e.g., everyone has a `feature` branch), we need
-/// to identify which PR comes from *our* fork/remote, not just which PR we authored.
-///
-/// # Why not use `--author`?
-///
-/// The `gh pr list --author` flag filters by who *created* the PR, not whose fork
-/// the PR comes *from*. These are usually the same, but not always:
-/// - Maintainers may create PRs from contributor forks
-/// - Bots may create PRs on behalf of users
-/// - Organization repos: `--author company` doesn't match individual user PRs
-///
-/// # Why client-side filtering?
-///
-/// Neither `gh` nor `glab` CLI support server-side filtering by source repository.
 /// Extract owner and repository name from a git remote URL.
 pub fn parse_owner_repo(url: &str) -> Option<(String, String)> {
     GitRemoteUrl::parse(url).map(|u| (u.owner().to_string(), u.repo().to_string()))
