@@ -145,7 +145,9 @@ SELECT
        WHEN name LIKE '%rev-parse%' THEN 'rev_parse'
        ELSE 'other' END as task_type,
   COUNT(*) as count,
-  ROUND(SUM(dur)/1e6, 2) as total_ms
+  ROUND(SUM(dur)/1e6, 2) as total_ms,
+  ROUND(MAX(dur)/1e6, 2) as max_ms,
+  ROUND(AVG(dur)/1e6, 2) as avg_ms
 FROM slice WHERE dur > 0
 GROUP BY task_type ORDER BY total_ms DESC;
 EOF

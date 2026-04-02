@@ -7,6 +7,22 @@ use anyhow::Context;
 
 use super::Repository;
 use crate::git::{IntegrationReason, check_integration, compute_integration_lazy};
+use crate::shell_exec::Cmd;
+
+/// Result of the combined merge-tree + patch-id integration probe.
+///
+/// Encapsulates the two-step sequence: first try `merge-tree --write-tree` to
+/// check if merging would add anything, then fall back to patch-id matching
+/// when merge-tree conflicts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MergeProbeResult {
+    /// Whether merging the branch into target would change the target's tree.
+    /// Always `true` when merge-tree conflicts (conservative).
+    pub would_merge_add: bool,
+    /// Whether patch-id matching found the branch's squashed diff in a target commit.
+    /// Only `true` when merge-tree conflicted AND patch-id found a match.
+    pub is_patch_id_match: bool,
+}
 
 impl Repository {
     /// Resolve a ref, preferring branches over tags when names collide.
@@ -128,42 +144,123 @@ impl Repository {
 
     /// Check if merging a branch into target would add anything (not already integrated).
     ///
-    /// Uses `git merge-tree` to simulate merging the branch into the target. If the
-    /// resulting tree matches the target's tree, then merging would add nothing,
-    /// meaning the branch's content is already integrated.
-    ///
-    /// This handles cases that simple tree comparison misses:
-    /// - Squash-merged branches where main has advanced with additional commits
-    /// - Rebased branches where the base has moved forward
+    /// Caller must pass resolved refs (via `resolve_preferring_branch`).
     ///
     /// Returns:
-    /// - `Ok(true)` if merging would change the target (branch has unintegrated changes)
-    /// - `Ok(false)` if merging would NOT change target (branch is already integrated)
-    /// - `Ok(true)` if merge would have conflicts (conservative: treat as not integrated)
-    /// - `Err` if git commands fail
-    pub fn would_merge_add_to_target(&self, branch: &str, target: &str) -> anyhow::Result<bool> {
-        let branch = self.resolve_preferring_branch(branch);
-        let target = self.resolve_preferring_branch(target);
+    /// - `Ok(Some(true))` if merging would change the target
+    /// - `Ok(Some(false))` if merging would NOT change target (branch is already integrated)
+    /// - `Ok(None)` if merge-tree conflicted (caller should try patch-id fallback)
+    fn would_merge_add_to_target(
+        &self,
+        branch: &str,
+        target: &str,
+    ) -> anyhow::Result<Option<bool>> {
         // Simulate merging branch into target
         // On conflict, merge-tree exits non-zero and we can't get a clean tree
-        let merge_result = self.run_command(&["merge-tree", "--write-tree", &target, &branch]);
+        let merge_result = self.run_command(&["merge-tree", "--write-tree", target, branch]);
 
         let Ok(merge_tree) = merge_result else {
-            // merge-tree failed (likely conflicts) - conservatively treat as having changes
-            return Ok(true);
+            // merge-tree failed (likely conflicts) — caller should try patch-id fallback
+            return Ok(None);
         };
 
         let merge_tree = merge_tree.trim();
         if merge_tree.is_empty() {
             // Empty output is unexpected - treat as having changes
-            return Ok(true);
+            return Ok(Some(true));
         }
 
         // Get target's tree for comparison
         let target_tree = self.rev_parse_tree(&format!("{target}^{{tree}}"))?;
 
         // If merge result differs from target's tree, merging would add something
-        Ok(merge_tree != target_tree)
+        Ok(Some(merge_tree != target_tree))
+    }
+
+    /// Detect squash merges via patch-id matching.
+    ///
+    /// Computes the combined diff of the entire branch (`diff-tree -p merge-base branch`)
+    /// and checks if any single commit on the target has the same patch-id. A match means
+    /// the target has a commit containing the exact same file changes as the whole branch
+    /// — i.e., a squash merge.
+    ///
+    /// Only runs when `merge-tree` conflicts (both sides modified the same files),
+    /// since `MergeAddsNothing` handles the non-conflict case. Cost scales with the
+    /// number of commits on target since the merge-base (`git log -p`).
+    ///
+    /// Returns `Ok(true)` if a matching squash-merge commit is found on the target,
+    /// `Ok(false)` otherwise (including when patch-id computation fails — conservative).
+    fn is_squash_merged_via_patch_id(&self, branch: &str, target: &str) -> anyhow::Result<bool> {
+        let Some(merge_base) = self.merge_base(target, branch)? else {
+            return Ok(false);
+        };
+
+        // Compute the squashed patch-id (combined diff of all branch changes).
+        let branch_diff = self.run_command(&["diff-tree", "-p", &merge_base, branch])?;
+        let branch_output = self.compute_patch_ids(&branch_diff)?;
+        let Some(branch_pid) = branch_output.split_whitespace().next() else {
+            return Ok(false);
+        };
+
+        // Get all target commits' patch-ids in one pass.
+        // `git log -p` pipes all patches through `git patch-id --verbatim`.
+        let target_log =
+            self.run_command(&["log", "-p", "--reverse", &format!("{merge_base}..{target}")])?;
+
+        let target_pids = self.compute_patch_ids(&target_log)?;
+
+        Ok(target_pids
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(branch_pid)))
+    }
+
+    /// Pipe diff content through `git patch-id --verbatim` and return the output.
+    ///
+    /// Uses `--verbatim` (not `--stable`) to avoid false positives from whitespace
+    /// normalization — `--stable` strips whitespace, so tabs-vs-spaces would produce
+    /// matching patch-ids even though the content differs.
+    fn compute_patch_ids(&self, diff: &str) -> anyhow::Result<String> {
+        let output = Cmd::new("git")
+            .args(["patch-id", "--verbatim"])
+            .current_dir(&self.discovery_path)
+            .context(self.logging_context())
+            .stdin_bytes(diff.to_owned())
+            .run()
+            .context("Failed to compute patch-id")?;
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Combined merge-tree + patch-id integration probe.
+    ///
+    /// Single implementation of the merge-tree → patch-id fallback sequence,
+    /// used by both `wt list` (parallel tasks) and `wt remove`/`wt merge`
+    /// (sequential via [`compute_integration_lazy`]).
+    pub fn merge_integration_probe(
+        &self,
+        branch: &str,
+        target: &str,
+    ) -> anyhow::Result<MergeProbeResult> {
+        let branch = self.resolve_preferring_branch(branch);
+        let target = self.resolve_preferring_branch(target);
+        let merge_result = self.would_merge_add_to_target(&branch, &target)?;
+        match merge_result {
+            Some(would_add) => Ok(MergeProbeResult {
+                would_merge_add: would_add,
+                is_patch_id_match: false,
+            }),
+            None => {
+                // merge-tree conflicted — try patch-id fallback.
+                // Patch-id errors are non-fatal: if we can't compute patch-ids,
+                // conservatively report no match (branch appears not integrated).
+                let matched = self
+                    .is_squash_merged_via_patch_id(&branch, &target)
+                    .unwrap_or(false);
+                Ok(MergeProbeResult {
+                    would_merge_add: true,
+                    is_patch_id_match: matched,
+                })
+            }
+        }
     }
 
     /// Determine the effective target for integration checks.
