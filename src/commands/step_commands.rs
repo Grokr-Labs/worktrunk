@@ -24,7 +24,7 @@ use ignore::gitignore::GitignoreBuilder;
 use rayon::prelude::*;
 use worktrunk::HookType;
 use worktrunk::config::{CopyIgnoredConfig, UserConfig};
-use worktrunk::copy::{MAX_COPY_THREADS, copy_dir_recursive, create_symlink, remove_if_exists};
+use worktrunk::copy::{copy_dir_recursive, create_symlink, in_copy_pool, remove_if_exists};
 use worktrunk::git::Repository;
 use worktrunk::path::format_path_for_display;
 use worktrunk::shell_exec::Cmd;
@@ -801,18 +801,9 @@ pub fn step_copy_ignored(
         }
     }
 
-    // Copy entries in parallel — each entry has a distinct destination path.
-    // A single dedicated thread pool is created once and shared across all copy
-    // operations (outer loop + inner directory recursion). This prevents
-    // concurrent callers from each creating their own pool simultaneously,
-    // which would exhaust the OS file-descriptor limit on large trees
-    // (EMFILE / "too many open files"). copy_dir_recursive() detects that it is
-    // already running inside a rayon worker and reuses this pool automatically.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(MAX_COPY_THREADS)
-        .build()
-        .context("building copy thread pool")?;
-    pool.install(|| {
+    // Run all copies in the shared copy pool so that the outer par_iter and
+    // inner copy_dir_recursive calls share the same bounded thread pool.
+    in_copy_pool(|| {
         entries_to_copy
             .par_iter()
             .try_for_each(|(src_entry, is_dir)| -> anyhow::Result<()> {
