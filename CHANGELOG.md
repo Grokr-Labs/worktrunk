@@ -46,6 +46,10 @@
 
 - **Placeholder directory on non-current worktree removal**: `wt remove` created unnecessary empty placeholder directories and slept for 1 second when removing worktrees other than the current one. ([#1868](https://github.com/max-sixty/worktrunk/pull/1868), [#1874](https://github.com/max-sixty/worktrunk/pull/1874))
 
+- **Merge-tree errors silently swallowed**: `git merge-tree` failures (invalid refs, corrupt repos) were treated as conflicts instead of propagating, triggering expensive patch-id fallback unnecessarily. ([#1896](https://github.com/max-sixty/worktrunk/pull/1896))
+
+- **Deprecated key in wrong config file**: A deprecated section key (e.g., `[commit-generation]`) in the wrong config file (e.g., project config) was silently filtered. Now warns "Key X belongs in Y config as Z". ([#1899](https://github.com/max-sixty/worktrunk/pull/1899))
+
 - **Config migration mutex panic**: Replaced unsafe `unwrap()` with error propagation in config deprecation migration. ([#1887](https://github.com/max-sixty/worktrunk/pull/1887))
 
 - **Hook show outside git repo**: `wt hook show` now provides a clear error message when run outside a git repository. ([#1809](https://github.com/max-sixty/worktrunk/pull/1809), thanks @noirbizarre)
