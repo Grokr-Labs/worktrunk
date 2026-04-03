@@ -374,11 +374,9 @@ fn render_system_config(out: &mut String) -> anyhow::Result<bool> {
         writeln!(out, "{}", error_message("Invalid config"))?;
         writeln!(out, "{}", format_with_gutter(&e.to_string(), None))?;
     } else {
-        let unknown_keys: std::collections::HashMap<_, _> = find_unknown_user_keys(&contents)
-            .into_iter()
-            .filter(|(k, _)| !worktrunk::config::DEPRECATED_SECTION_KEYS.contains(&k.as_str()))
-            .collect();
-        out.push_str(&warn_unknown_keys::<UserConfig>(&unknown_keys));
+        out.push_str(&warn_unknown_keys::<UserConfig>(&find_unknown_user_keys(
+            &contents,
+        )));
     }
 
     // Display TOML with syntax highlighting
@@ -421,7 +419,7 @@ fn render_user_config(out: &mut String, has_system_config: bool) -> anyhow::Resu
 
     // Check for deprecations with show_brief_warning=false (silent mode)
     // User config is global, not tied to any repository
-    let has_deprecations = if let Ok(Some(info)) = worktrunk::config::check_and_migrate(
+    let has_deprecations = if let Ok(result) = worktrunk::config::check_and_migrate(
         &config_path,
         &contents,
         true,
@@ -429,9 +427,13 @@ fn render_user_config(out: &mut String, has_system_config: bool) -> anyhow::Resu
         None,
         false, // silent mode - we'll format the output ourselves
     ) {
-        // Add deprecation details to the output buffer
-        out.push_str(&worktrunk::config::format_deprecation_details(&info));
-        true
+        if let Some(info) = result.info {
+            // Add deprecation details to the output buffer
+            out.push_str(&worktrunk::config::format_deprecation_details(&info));
+            true
+        } else {
+            false
+        }
     } else {
         false
     };
@@ -445,11 +447,9 @@ fn render_user_config(out: &mut String, has_system_config: bool) -> anyhow::Resu
         // Only check for unknown keys if config is valid.
         // Filter deprecated section keys to avoid duplicate warnings
         // (deprecation system already warns about these).
-        let unknown_keys: std::collections::HashMap<_, _> = find_unknown_user_keys(&contents)
-            .into_iter()
-            .filter(|(k, _)| !worktrunk::config::DEPRECATED_SECTION_KEYS.contains(&k.as_str()))
-            .collect();
-        out.push_str(&warn_unknown_keys::<UserConfig>(&unknown_keys));
+        out.push_str(&warn_unknown_keys::<UserConfig>(&find_unknown_user_keys(
+            &contents,
+        )));
     }
 
     // Add "Current config" label when deprecations shown (to separate from diff)
@@ -490,8 +490,12 @@ pub(super) fn warn_unknown_keys<C: worktrunk::config::WorktrunkConfig>(
 ) -> String {
     let mut out = String::new();
 
-    // Sort keys for deterministic output order
-    let mut keys: Vec<_> = unknown_keys.keys().collect();
+    // Sort keys for deterministic output order, skipping deprecated keys
+    // (the deprecation system handles those with better messaging)
+    let mut keys: Vec<_> = unknown_keys
+        .keys()
+        .filter(|k| !worktrunk::config::DEPRECATED_SECTION_KEYS.contains(&k.as_str()))
+        .collect();
     keys.sort();
 
     for key in keys {
@@ -563,7 +567,7 @@ fn render_project_config(out: &mut String) -> anyhow::Result<()> {
     // Check for deprecations with show_brief_warning=false (silent mode)
     // Only write migration file in main worktree, not linked worktrees
     let is_main_worktree = !repo.current_worktree().is_linked().unwrap_or(true);
-    let has_deprecations = if let Ok(Some(info)) = worktrunk::config::check_and_migrate(
+    let has_deprecations = if let Ok(result) = worktrunk::config::check_and_migrate(
         &config_path,
         &contents,
         is_main_worktree,
@@ -571,9 +575,13 @@ fn render_project_config(out: &mut String) -> anyhow::Result<()> {
         Some(&repo),
         false, // silent mode - we'll format the output ourselves
     ) {
-        // Add deprecation details to the output buffer
-        out.push_str(&worktrunk::config::format_deprecation_details(&info));
-        true
+        if let Some(info) = result.info {
+            // Add deprecation details to the output buffer
+            out.push_str(&worktrunk::config::format_deprecation_details(&info));
+            true
+        } else {
+            false
+        }
     } else {
         false
     };
