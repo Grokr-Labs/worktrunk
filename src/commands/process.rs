@@ -2,7 +2,6 @@ use anyhow::Context;
 use color_print::cformat;
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::process::Command;
 use std::process::Stdio;
 use std::str::FromStr;
@@ -194,20 +193,18 @@ fn posix_command_separator(command: &str) -> &'static str {
 /// * `branch` - Branch name for log organization
 /// * `hook_log` - Log specification (determines the log filename)
 /// * `context_json` - Optional JSON context to pipe to command's stdin
-/// * `extra_env` - Additional environment variables for the spawned process
 ///
 /// # Returns
 /// Path to the log file where output is being written
-pub fn spawn_detached(
+/// Create the log directory and file for a detached process.
+///
+/// Returns `(log_path, log_file)`. Shared by `spawn_detached` and
+/// `spawn_detached_exec`.
+fn create_detach_log(
     repo: &Repository,
-    worktree_path: &Path,
-    command: &str,
     branch: &str,
     hook_log: &HookLog,
-    context_json: Option<&str>,
-    extra_env: &[(&str, &str)],
-) -> anyhow::Result<std::path::PathBuf> {
-    // Create log directory in the common git directory
+) -> anyhow::Result<(PathBuf, fs::File)> {
     let log_dir = repo.wt_logs_dir();
     fs::create_dir_all(&log_dir).with_context(|| {
         format!(
@@ -216,16 +213,26 @@ pub fn spawn_detached(
         )
     })?;
 
-    // Generate log path using the HookLog specification
     let log_path = hook_log.path(&log_dir, branch);
-
-    // Create log file
     let log_file = fs::File::create(&log_path).with_context(|| {
         format!(
             "Failed to create log file {}",
             format_path_for_display(&log_path)
         )
     })?;
+
+    Ok((log_path, log_file))
+}
+
+pub fn spawn_detached(
+    repo: &Repository,
+    worktree_path: &Path,
+    command: &str,
+    branch: &str,
+    hook_log: &HookLog,
+    context_json: Option<&str>,
+) -> anyhow::Result<std::path::PathBuf> {
+    let (log_path, log_file) = create_detach_log(repo, branch, hook_log)?;
 
     log::debug!(
         "$ {} (detached, logging to {})",
@@ -235,12 +242,12 @@ pub fn spawn_detached(
 
     #[cfg(unix)]
     {
-        spawn_detached_unix(worktree_path, command, log_file, context_json, extra_env)?;
+        spawn_detached_unix(worktree_path, command, log_file, context_json)?;
     }
 
     #[cfg(windows)]
     {
-        spawn_detached_windows(worktree_path, command, log_file, context_json, extra_env)?;
+        spawn_detached_windows(worktree_path, command, log_file, context_json)?;
     }
 
     Ok(log_path)
@@ -252,7 +259,6 @@ fn spawn_detached_unix(
     command: &str,
     log_file: fs::File,
     context_json: Option<&str>,
-    extra_env: &[(&str, &str)],
 ) -> anyhow::Result<()> {
     use std::os::unix::process::CommandExt;
 
@@ -298,7 +304,6 @@ fn spawn_detached_unix(
         .stderr(Stdio::from(log_file))
         // Prevent hooks from writing to the directive file
         .env_remove(worktrunk::shell_exec::DIRECTIVE_FILE_ENV_VAR)
-        .envs(extra_env.iter().map(|(k, v)| (k, v)))
         .process_group(0) // New process group, not in PTY's foreground group
         .spawn()
         .context("Failed to spawn detached process")?;
@@ -317,7 +322,6 @@ fn spawn_detached_windows(
     command: &str,
     log_file: fs::File,
     context_json: Option<&str>,
-    extra_env: &[(&str, &str)],
 ) -> anyhow::Result<()> {
     use std::os::windows::process::CommandExt;
     use worktrunk::shell_exec::ShellConfig;
@@ -373,13 +377,121 @@ fn spawn_detached_windows(
         .stderr(Stdio::from(log_file))
         // Prevent hooks from writing to the directive file
         .env_remove(worktrunk::shell_exec::DIRECTIVE_FILE_ENV_VAR)
-        .envs(extra_env.iter().map(|(k, v)| (k, v)))
         .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
         .spawn()
         .context("Failed to spawn detached process")?;
 
     // Windows: Process is fully detached via DETACHED_PROCESS flag,
     // no need to wait (unlike Unix which waits for the outer shell)
+
+    Ok(())
+}
+
+/// Spawn a detached background process by executing a binary directly.
+///
+/// Unlike [`spawn_detached`] (which wraps a shell command in `sh -c`), this
+/// spawns the executable without an intermediate shell. Stdin bytes are written
+/// to the child's stdin pipe and then the pipe is closed.
+///
+/// Used for structured child processes like `wt hook run-pipeline` where the parent
+/// passes data via stdin rather than through a temp file or shell arguments.
+pub fn spawn_detached_exec(
+    repo: &Repository,
+    worktree_path: &Path,
+    program: &Path,
+    args: &[&str],
+    branch: &str,
+    hook_log: &HookLog,
+    stdin_bytes: &[u8],
+) -> anyhow::Result<std::path::PathBuf> {
+    let (log_path, log_file) = create_detach_log(repo, branch, hook_log)?;
+
+    log::debug!(
+        "$ {} {} (detached, logging to {})",
+        program.display(),
+        args.join(" "),
+        log_path.file_name().unwrap_or_default().to_string_lossy()
+    );
+
+    #[cfg(unix)]
+    {
+        spawn_detached_exec_unix(worktree_path, program, args, log_file, stdin_bytes)?;
+    }
+
+    #[cfg(windows)]
+    {
+        spawn_detached_exec_windows(worktree_path, program, args, log_file, stdin_bytes)?;
+    }
+
+    Ok(log_path)
+}
+
+#[cfg(unix)]
+fn spawn_detached_exec_unix(
+    worktree_path: &Path,
+    program: &Path,
+    args: &[&str],
+    log_file: fs::File,
+    stdin_bytes: &[u8],
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::os::unix::process::CommandExt;
+
+    let mut child = Command::new(program)
+        .args(args)
+        .current_dir(worktree_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(
+            log_file
+                .try_clone()
+                .context("Failed to clone log file handle")?,
+        ))
+        .stderr(Stdio::from(log_file))
+        .env_remove(worktrunk::shell_exec::DIRECTIVE_FILE_ENV_VAR)
+        .process_group(0)
+        .spawn()
+        .context("Failed to spawn detached process")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        // Ignore BrokenPipe — child may exit before reading all input.
+        let _ = stdin.write_all(stdin_bytes);
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn spawn_detached_exec_windows(
+    worktree_path: &Path,
+    program: &Path,
+    args: &[&str],
+    log_file: fs::File,
+    stdin_bytes: &[u8],
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+    const DETACHED_PROCESS: u32 = 0x00000008;
+
+    let mut child = Command::new(program)
+        .args(args)
+        .current_dir(worktree_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(
+            log_file
+                .try_clone()
+                .context("Failed to clone log file handle")?,
+        ))
+        .stderr(Stdio::from(log_file))
+        .env_remove(worktrunk::shell_exec::DIRECTIVE_FILE_ENV_VAR)
+        .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+        .spawn()
+        .context("Failed to spawn detached process")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(stdin_bytes);
+    }
 
     Ok(())
 }

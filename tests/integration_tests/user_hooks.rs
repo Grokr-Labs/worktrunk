@@ -2310,8 +2310,8 @@ check = "test -d {{ cwd }} && echo 'cwd_exists=true' > ../cwd_check.txt || echo 
 #[rstest]
 fn test_user_post_start_pipeline_serial_ordering(repo: TestRepo) {
     // Pipeline: serial step creates a marker, concurrent step reads it.
-    // The compound shell command chains them with &&, so the marker
-    // exists when the concurrent step runs.
+    // Serial steps run in order, so the marker exists when the
+    // concurrent step runs.
     repo.write_test_config(
         r#"post-start = [
     "echo SETUP_DONE > pipeline_marker.txt",
@@ -2339,7 +2339,7 @@ fn test_user_post_start_pipeline_serial_ordering(repo: TestRepo) {
 
 #[rstest]
 fn test_user_post_start_pipeline_failure_skips_later_steps(repo: TestRepo) {
-    // First step fails → second step should not run (chained with &&).
+    // First step fails → second step should not run (pipeline aborts on failure).
     repo.write_test_config(
         r#"post-start = [
     "exit 1",
@@ -2411,11 +2411,9 @@ fn test_user_post_start_pipeline_lazy_vars_foreground(repo: TestRepo) {
 #[rstest]
 fn test_user_post_start_pipeline_lazy_vars_background(repo: TestRepo) {
     // Pipeline step 1 sets a var via git config (not `wt config` — bare `wt`
-    // isn't on PATH in the detached background shell). Step 2 references
-    // {{ vars.name }}, which triggers the lazy expansion path where
-    // build_pipeline_command() wraps it in
-    //   eval "$(path/to/wt step eval --shell-escape ...)"
-    // The absolute binary path comes from std::env::current_exe().
+    // isn't on PATH in the detached background process). Step 2 references
+    // {{ vars.name }}, which is expanded just-in-time by the background
+    // pipeline runner reading fresh vars from git config.
     repo.write_test_config(
         r#"post-start = [
     "git config worktrunk.state.{{ branch }}.vars.name '{{ branch | sanitize }}-postgres'",
@@ -2438,5 +2436,124 @@ fn test_user_post_start_pipeline_lazy_vars_background(repo: TestRepo) {
     assert_eq!(
         content, "feature-postgres",
         "Background lazy step should see var set by prior step"
+    );
+}
+
+#[rstest]
+fn test_user_post_start_pipeline_concurrent_all_run(repo: TestRepo) {
+    // Concurrent group: both commands should run and produce output.
+    repo.write_test_config(
+        r#"post-start = [
+    { a = "echo AAA > concurrent_a.txt", b = "echo BBB > concurrent_b.txt" }
+]
+"#,
+    );
+
+    snapshot_switch(
+        "user_post_start_pipeline_concurrent_all",
+        &repo,
+        &["--create", "feature"],
+    );
+
+    let worktree_path = repo.root_path().parent().unwrap().join("repo.feature");
+    let file_a = worktree_path.join("concurrent_a.txt");
+    let file_b = worktree_path.join("concurrent_b.txt");
+    wait_for_file_content(&file_a);
+    wait_for_file_content(&file_b);
+
+    let a = fs::read_to_string(&file_a).unwrap();
+    let b = fs::read_to_string(&file_b).unwrap();
+    assert!(
+        a.contains("AAA"),
+        "concurrent command 'a' should run, got: {a}"
+    );
+    assert!(
+        b.contains("BBB"),
+        "concurrent command 'b' should run, got: {b}"
+    );
+}
+
+#[rstest]
+fn test_user_post_start_pipeline_concurrent_partial_failure(repo: TestRepo) {
+    // One command in a concurrent group fails. The other should still
+    // complete (pipeline waits for all children), and later steps should
+    // not run (group reported as failed).
+    repo.write_test_config(
+        r#"post-start = [
+    { fail = "exit 1", ok = "echo SURVIVED > concurrent_survivor.txt" },
+    "echo SHOULD_NOT_RUN > after_concurrent.txt"
+]
+"#,
+    );
+
+    snapshot_switch(
+        "user_post_start_pipeline_concurrent_failure",
+        &repo,
+        &["--create", "feature"],
+    );
+
+    let worktree_path = repo.root_path().parent().unwrap().join("repo.feature");
+
+    // The surviving command should complete despite the sibling failing.
+    let survivor = worktree_path.join("concurrent_survivor.txt");
+    wait_for_file_content(&survivor);
+    let content = fs::read_to_string(&survivor).unwrap();
+    assert!(
+        content.contains("SURVIVED"),
+        "Non-failing concurrent command should still complete, got: {content}"
+    );
+
+    // The step after the failed group should NOT run.
+    thread::sleep(SLEEP_FOR_ABSENCE_CHECK);
+    let after = worktree_path.join("after_concurrent.txt");
+    assert!(
+        !after.exists(),
+        "Steps after a failed concurrent group should not run"
+    );
+}
+
+#[rstest]
+fn test_user_post_start_pipeline_shell_escaping(repo: TestRepo) {
+    // Template values containing shell metacharacters must be safely
+    // escaped. Step 1 sets a var with spaces, quotes, and a dollar sign.
+    // Step 2 expands it into a shell command — without shell_escape=true,
+    // the value would be word-split or trigger expansion.
+    repo.write_test_config(
+        r#"post-start = [
+    "git config worktrunk.state.{{ branch }}.vars.tricky 'hello world $HOME \"quotes\"'",
+    { check = "echo {{ vars.tricky }} > escaped_output.txt" }
+]
+"#,
+    );
+
+    // Use foreground so we can check the result immediately.
+    let mut cmd = crate::common::wt_command();
+    cmd.current_dir(repo.root_path());
+    cmd.env("WORKTRUNK_CONFIG_PATH", repo.test_config_path());
+    cmd.args(["hook", "post-start", "--yes", "--foreground"]);
+
+    let output = cmd.output().expect("Failed to run foreground hook");
+    assert!(
+        output.status.success(),
+        "Hook should succeed.\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let marker_file = repo.root_path().join("escaped_output.txt");
+    assert!(marker_file.exists(), "Escaped output file should exist");
+
+    let content = fs::read_to_string(&marker_file).unwrap().trim().to_string();
+    // The value should arrive intact — not word-split, not $HOME-expanded.
+    assert!(
+        content.contains("hello world"),
+        "Spaces should not cause word splitting, got: {content}"
+    );
+    assert!(
+        content.contains("$HOME"),
+        "$HOME should be literal, not expanded, got: {content}"
+    );
+    assert!(
+        content.contains("\"quotes\""),
+        "Quotes should survive escaping, got: {content}"
     );
 }

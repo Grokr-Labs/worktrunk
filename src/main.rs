@@ -247,6 +247,7 @@ fn handle_hook_command(action: HookCommand) -> anyhow::Result<()> {
             name.as_deref(),
             &vars,
         ),
+        HookCommand::RunPipeline => commands::run_pipeline(),
         HookCommand::Approvals { action } => match action {
             ApprovalsCommand::Add { all } => add_approvals(all),
             ApprovalsCommand::Clear { global } => clear_approvals(global),
@@ -321,11 +322,7 @@ fn handle_step_command(action: StepCommand) -> anyhow::Result<()> {
             dry_run,
             force,
         } => step_copy_ignored(from.as_deref(), to.as_deref(), dry_run, force),
-        StepCommand::Eval {
-            template,
-            shell_escape,
-            dry_run,
-        } => step_eval(&template, shell_escape, dry_run),
+        StepCommand::Eval { template, dry_run } => step_eval(&template, dry_run),
         StepCommand::ForEach { args } => step_for_each(args),
         StepCommand::Promote { branch } => {
             handle_promote(branch.as_deref()).map(|result| match result {
