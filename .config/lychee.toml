@@ -45,8 +45,9 @@ exclude = [
     "reddit\\.com",
     "linkedin\\.com",
 
-    # Sites with bot protection
+    # Sites with bot protection or reliability issues
     "anthropic\\.com/engineering",
+    "docs\\.anthropic\\.com",
 
     # Sites with reliability issues in CI
     "stackoverflow\\.com",
