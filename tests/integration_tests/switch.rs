@@ -1560,6 +1560,67 @@ fn test_switch_create_no_hint_with_custom_worktree_path(repo: TestRepo) {
     );
 }
 
+/// Test that the worktree-path hint is suppressed when a project-specific
+/// worktree-path is configured (not just a global one).
+///
+/// Regression test for #1939: `has_custom_worktree_path()` only checked the
+/// global `worktree-path` setting, causing a misleading hint even when a
+/// project-specific template was configured.
+#[rstest]
+fn test_switch_create_no_hint_with_project_specific_worktree_path(repo: TestRepo) {
+    // Set origin to a GitHub URL so the project identifier matches
+    let bare_url = String::from_utf8_lossy(
+        &repo
+            .git_command()
+            .args(["config", "remote.origin.url"])
+            .run()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+
+    repo.run_git(&[
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/test-org/test-repo.git",
+    ]);
+
+    // Redirect GitHub URL to local bare remote for actual git operations
+    repo.run_git(&[
+        "config",
+        &format!("url.{}.insteadOf", bare_url),
+        "https://github.com/test-org/test-repo.git",
+    ]);
+
+    // Set project-specific worktree-path (no global worktree-path set)
+    repo.write_test_config(
+        r#"
+[projects."github.com/test-org/test-repo"]
+worktree-path = "{{ repo_path }}/../{{ branch | sanitize }}"
+"#,
+    );
+
+    let output = repo
+        .wt_command()
+        .args(["switch", "--create", "project-feature"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "switch --create should succeed, stderr: {stderr}"
+    );
+
+    // Hint should be suppressed when project-specific worktree-path exists
+    assert!(
+        !stderr.contains("customize worktree locations"),
+        "Hint should be suppressed when project has custom worktree-path. stderr: {stderr}"
+    );
+}
+
 // ============================================================================
 // PR Syntax Tests (pr:<number>)
 // ============================================================================
@@ -3657,6 +3718,103 @@ fn test_switch_with_relative_worktree_paths(repo: TestRepo) {
 
     // Verify switching to the relative-path worktree works
     snapshot_switch("switch_to_relative_paths", &repo, &["relative-test"]);
+}
+
+// -- JSON format tests --
+
+#[rstest]
+fn test_switch_format_json_create(repo: TestRepo) {
+    let output = repo
+        .wt_command()
+        .args([
+            "switch",
+            "--create",
+            "json-test",
+            "--no-cd",
+            "--yes",
+            "--format=json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["action"], "created");
+    assert_eq!(json["branch"], "json-test");
+    assert!(json["path"].as_str().unwrap().contains("json-test"));
+    assert_eq!(json["created_branch"], true);
+}
+
+#[rstest]
+fn test_switch_format_json_existing(mut repo: TestRepo) {
+    // Create worktree first
+    repo.add_worktree("existing-json");
+
+    let output = repo
+        .wt_command()
+        .args([
+            "switch",
+            "existing-json",
+            "--no-cd",
+            "--yes",
+            "--format=json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["action"], "existing");
+    assert_eq!(json["branch"], "existing-json");
+    // created_branch should be absent for existing switches
+    assert!(json.get("created_branch").is_none());
+}
+
+#[rstest]
+fn test_switch_format_json_already_at(mut repo: TestRepo) {
+    // Create worktree and switch to it
+    let path = repo.add_worktree("already-json");
+
+    let output = repo
+        .wt_command()
+        .current_dir(&path)
+        .args([
+            "switch",
+            "already-json",
+            "--no-cd",
+            "--yes",
+            "--format=json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["action"], "already_at");
+    assert_eq!(json["branch"], "already-json");
+}
+
+#[rstest]
+fn test_switch_format_table_rejected_by_clap(repo: TestRepo) {
+    let output = repo
+        .wt_command()
+        .args([
+            "switch",
+            "--create",
+            "table-test",
+            "--no-cd",
+            "--yes",
+            "--format=table",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid value"), "stderr: {stderr}");
 }
 
 /// Test that `[switch] cd = false` config is respected when no flags provided

@@ -582,6 +582,7 @@ fn handle_switch_command(args: SwitchArgs) -> anyhow::Result<()> {
                     clobber: args.clobber,
                     change_dir: change_dir_flag,
                     verify,
+                    format: args.format,
                 },
                 &mut config,
                 &binary_name(),
@@ -1070,6 +1071,13 @@ fn print_help_to_stderr() {
 }
 
 fn main() {
+    // Capture the startup working directory before anything else. This is
+    // used by shell_exec to resolve relative `GIT_*` path variables inherited
+    // from a parent `git` (e.g. when invoked via `git wt ...` with
+    // `alias.wt = "!wt"`) against a stable reference, rather than against
+    // each child command's `current_dir`. See issue #1914.
+    worktrunk::shell_exec::init_startup_cwd();
+
     init_rayon_thread_pool();
 
     // Tell crossterm to always emit ANSI sequences

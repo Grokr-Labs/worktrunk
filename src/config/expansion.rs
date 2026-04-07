@@ -538,7 +538,7 @@ mod tests {
 
     use super::*;
     use crate::shell_exec::Cmd;
-    use crate::testutil::TestRepo;
+    use crate::testing::TestRepo;
 
     fn test_repo() -> TestRepo {
         TestRepo::new()

@@ -1,7 +1,11 @@
-//! Shared test utilities for unit tests within the worktrunk crate.
+//! Shared test fixtures for worktrunk unit tests.
 //!
 //! Provides lightweight git repository fixtures for tests that need a real
 //! `.git` directory (template expansion, config resolution, work item generation).
+//!
+//! This module is `#[doc(hidden)] pub` so both library (`src/`) and binary
+//! (`src/commands/`) unit tests can use it — `#[cfg(test)]` modules are only
+//! visible within their own crate.
 //!
 //! For integration tests, use `tests/common/mod.rs` (`TestRepo`) instead — it
 //! provides full CLI isolation, snapshot filters, and mock commands.
@@ -23,6 +27,7 @@ impl TestRepo {
     /// Create a new repo with `git init -b main`.
     ///
     /// Uses explicit `-b main` for determinism regardless of system git config.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         Cmd::new("git")
