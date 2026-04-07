@@ -45,5 +45,6 @@ exit_code: 0
 ----- stdout -----
 
 ----- stderr -----
+[2m○[22m merged-branch
 
 [36m❯[39m Remove 1 worktree & branch? [1m[y/N/?][22m
