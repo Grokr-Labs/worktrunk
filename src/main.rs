@@ -64,7 +64,8 @@ use cli::{
     ApprovalsCommand, CiStatusAction, Cli, Commands, ConfigCommand, ConfigPluginsClaudeCommand,
     ConfigPluginsCommand, ConfigPluginsOpencodeCommand, ConfigShellCommand, DefaultBranchAction,
     HintsAction, HookCommand, ListArgs, ListSubcommand, LogsAction, MarkerAction, MergeArgs,
-    PreviousBranchAction, RemoveArgs, StateCommand, StepCommand, SwitchArgs, VarsAction,
+    PreviousBranchAction, RemoveArgs, StateCommand, StepCommand, SwitchArgs, SwitchFormat,
+    VarsAction,
 };
 use worktrunk::HookType;
 
@@ -118,10 +119,10 @@ fn run_non_toggle_hook(
     hook_type: HookType,
     yes: bool,
     dry_run: bool,
-    name: Option<&str>,
+    names: &[String],
     vars: &[(String, String)],
 ) -> anyhow::Result<()> {
-    run_hook(hook_type, yes, None, dry_run, name, vars)
+    run_hook(hook_type, yes, None, dry_run, names, vars)
 }
 
 fn run_toggleable_hook(
@@ -129,10 +130,10 @@ fn run_toggleable_hook(
     yes: bool,
     dry_run: bool,
     foreground: bool,
-    name: Option<&str>,
+    names: &[String],
     vars: &[(String, String)],
 ) -> anyhow::Result<()> {
-    run_hook(hook_type, yes, Some(foreground), dry_run, name, vars)
+    run_hook(hook_type, yes, Some(foreground), dry_run, names, vars)
 }
 
 fn warn_select_deprecated() {
@@ -167,87 +168,59 @@ fn handle_hook_command(action: HookCommand) -> anyhow::Result<()> {
             yes,
             dry_run,
             vars,
-        } => run_non_toggle_hook(HookType::PreSwitch, yes, dry_run, name.as_deref(), &vars),
+        } => run_non_toggle_hook(HookType::PreSwitch, yes, dry_run, &name, &vars),
         HookCommand::PostSwitch {
             name,
             yes,
             dry_run,
             foreground,
             vars,
-        } => run_toggleable_hook(
-            HookType::PostSwitch,
-            yes,
-            dry_run,
-            foreground,
-            name.as_deref(),
-            &vars,
-        ),
+        } => run_toggleable_hook(HookType::PostSwitch, yes, dry_run, foreground, &name, &vars),
         HookCommand::PreStart {
             name,
             yes,
             dry_run,
             vars,
-        } => run_non_toggle_hook(HookType::PreStart, yes, dry_run, name.as_deref(), &vars),
+        } => run_non_toggle_hook(HookType::PreStart, yes, dry_run, &name, &vars),
         HookCommand::PostStart {
             name,
             yes,
             dry_run,
             foreground,
             vars,
-        } => run_toggleable_hook(
-            HookType::PostStart,
-            yes,
-            dry_run,
-            foreground,
-            name.as_deref(),
-            &vars,
-        ),
+        } => run_toggleable_hook(HookType::PostStart, yes, dry_run, foreground, &name, &vars),
         HookCommand::PreCommit {
             name,
             yes,
             dry_run,
             vars,
-        } => run_non_toggle_hook(HookType::PreCommit, yes, dry_run, name.as_deref(), &vars),
+        } => run_non_toggle_hook(HookType::PreCommit, yes, dry_run, &name, &vars),
         HookCommand::PostCommit {
             name,
             yes,
             dry_run,
             foreground,
             vars,
-        } => run_toggleable_hook(
-            HookType::PostCommit,
-            yes,
-            dry_run,
-            foreground,
-            name.as_deref(),
-            &vars,
-        ),
+        } => run_toggleable_hook(HookType::PostCommit, yes, dry_run, foreground, &name, &vars),
         HookCommand::PreMerge {
             name,
             yes,
             dry_run,
             vars,
-        } => run_non_toggle_hook(HookType::PreMerge, yes, dry_run, name.as_deref(), &vars),
+        } => run_non_toggle_hook(HookType::PreMerge, yes, dry_run, &name, &vars),
         HookCommand::PostMerge {
             name,
             yes,
             dry_run,
             foreground,
             vars,
-        } => run_toggleable_hook(
-            HookType::PostMerge,
-            yes,
-            dry_run,
-            foreground,
-            name.as_deref(),
-            &vars,
-        ),
+        } => run_toggleable_hook(HookType::PostMerge, yes, dry_run, foreground, &name, &vars),
         HookCommand::PreRemove {
             name,
             yes,
             dry_run,
             vars,
-        } => run_non_toggle_hook(HookType::PreRemove, yes, dry_run, name.as_deref(), &vars),
+        } => run_non_toggle_hook(HookType::PreRemove, yes, dry_run, &name, &vars),
         HookCommand::PostRemove {
             name,
             yes,
@@ -259,7 +232,7 @@ fn handle_hook_command(action: HookCommand) -> anyhow::Result<()> {
             yes,
             Some(foreground),
             dry_run,
-            name.as_deref(),
+            &name,
             &vars,
         ),
         HookCommand::RunPipeline => commands::run_pipeline(),
@@ -332,7 +305,7 @@ fn handle_step_command(action: StepCommand) -> anyhow::Result<()> {
             force,
         } => step_copy_ignored(from.as_deref(), to.as_deref(), dry_run, force),
         StepCommand::Eval { template, dry_run } => step_eval(&template, dry_run),
-        StepCommand::ForEach { args } => step_for_each(args),
+        StepCommand::ForEach { format, args } => step_for_each(args, format),
         StepCommand::Promote { branch } => {
             handle_promote(branch.as_deref()).map(|result| match result {
                 commands::PromoteResult::Promoted => (),
@@ -351,7 +324,8 @@ fn handle_step_command(action: StepCommand) -> anyhow::Result<()> {
             yes,
             min_age,
             foreground,
-        } => step_prune(dry_run, yes, &min_age, foreground),
+            format,
+        } => step_prune(dry_run, yes, &min_age, foreground, format),
         StepCommand::Relocate {
             branches,
             dry_run,
@@ -367,39 +341,52 @@ fn handle_step_command(action: StepCommand) -> anyhow::Result<()> {
 fn handle_state_command(action: StateCommand) -> anyhow::Result<()> {
     match action {
         StateCommand::DefaultBranch { action } => match action {
-            Some(DefaultBranchAction::Get) | None => handle_state_get("default-branch", None),
+            Some(DefaultBranchAction::Get) | None => {
+                handle_state_get("default-branch", None, SwitchFormat::Text)
+            }
             Some(DefaultBranchAction::Set { branch }) => {
                 handle_state_set("default-branch", branch, None)
             }
             Some(DefaultBranchAction::Clear) => handle_state_clear("default-branch", None, false),
         },
         StateCommand::PreviousBranch { action } => match action {
-            Some(PreviousBranchAction::Get) | None => handle_state_get("previous-branch", None),
+            Some(PreviousBranchAction::Get) | None => {
+                handle_state_get("previous-branch", None, SwitchFormat::Text)
+            }
             Some(PreviousBranchAction::Set { branch }) => {
                 handle_state_set("previous-branch", branch, None)
             }
             Some(PreviousBranchAction::Clear) => handle_state_clear("previous-branch", None, false),
         },
         StateCommand::CiStatus { action } => match action {
-            Some(CiStatusAction::Get { branch }) => handle_state_get("ci-status", branch),
-            None => handle_state_get("ci-status", None),
+            Some(CiStatusAction::Get { branch, format }) => {
+                handle_state_get("ci-status", branch, format)
+            }
+            None => handle_state_get("ci-status", None, SwitchFormat::Text),
             Some(CiStatusAction::Clear { branch, all }) => {
                 handle_state_clear("ci-status", branch, all)
             }
         },
         StateCommand::Marker { action } => match action {
-            Some(MarkerAction::Get { branch }) => handle_state_get("marker", branch),
-            None => handle_state_get("marker", None),
+            Some(MarkerAction::Get { branch, format }) => {
+                handle_state_get("marker", branch, format)
+            }
+            None => handle_state_get("marker", None, SwitchFormat::Text),
             Some(MarkerAction::Set { value, branch }) => handle_state_set("marker", value, branch),
             Some(MarkerAction::Clear { branch, all }) => handle_state_clear("marker", branch, all),
         },
         StateCommand::Logs { action } => match action {
-            Some(LogsAction::Get { hook, branch }) => handle_logs_get(hook, branch),
-            None => handle_logs_get(None, None),
+            Some(LogsAction::Get {
+                hook,
+                branch,
+                format,
+            }) => handle_logs_get(hook, branch, format),
+            None => handle_logs_get(None, None, SwitchFormat::Text),
             Some(LogsAction::Clear) => handle_state_clear("logs", None, false),
         },
         StateCommand::Hints { action } => match action {
-            Some(HintsAction::Get) | None => handle_hints_get(),
+            Some(HintsAction::Get { format }) => handle_hints_get(format),
+            None => handle_hints_get(SwitchFormat::Text),
             Some(HintsAction::Clear { name }) => handle_hints_clear(name),
         },
         StateCommand::Vars { action } => match action {
@@ -408,7 +395,7 @@ fn handle_state_command(action: StateCommand) -> anyhow::Result<()> {
                 assignment: (key, value),
                 branch,
             } => handle_vars_set(&key, &value, branch),
-            VarsAction::List { branch } => handle_vars_list(branch),
+            VarsAction::List { branch, format } => handle_vars_list(branch, format),
             VarsAction::Clear { key, all, branch } => {
                 handle_vars_clear(key.as_deref(), all, branch)
             }
@@ -478,7 +465,7 @@ fn handle_config_command(action: ConfigCommand) -> anyhow::Result<()> {
     match action {
         ConfigCommand::Shell { action } => handle_config_shell_command(action),
         ConfigCommand::Create { project } => handle_config_create(project),
-        ConfigCommand::Show { full } => handle_config_show(full),
+        ConfigCommand::Show { full, format } => handle_config_show(full, format),
         ConfigCommand::Update { yes } => handle_config_update(yes),
         ConfigCommand::Plugins { action } => handle_plugins_command(action),
         ConfigCommand::State { action } => handle_state_command(action),
@@ -710,6 +697,7 @@ fn validate_remove_targets(
 }
 
 fn handle_remove_command(args: RemoveArgs) -> anyhow::Result<()> {
+    let json_mode = args.format == SwitchFormat::Json;
     let verify = resolve_verify(args.verify, args.no_verify_deprecated);
     UserConfig::load()
         .context("Failed to load config")
@@ -777,7 +765,12 @@ fn handle_remove_command(args: RemoveArgs) -> anyhow::Result<()> {
                 // "Approve at the Gate": approval happens AFTER validation passes
                 let run_hooks = verify && approve_remove(args.yes)?;
 
-                handle_remove_output(&result, args.foreground, run_hooks, false)
+                handle_remove_output(&result, args.foreground, run_hooks, false, false)?;
+                if json_mode {
+                    let json = serde_json::json!([result.to_json()]);
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                Ok(())
             } else {
                 // Multi-worktree removal: validate ALL first, then approve, then execute
                 let plans = validate_remove_targets(
@@ -804,14 +797,27 @@ fn handle_remove_command(args: RemoveArgs) -> anyhow::Result<()> {
                 let run_hooks = verify && approve_remove(args.yes)?;
 
                 // Execute all validated plans: others first, branch-only next, current last
-                for result in plans.others {
-                    handle_remove_output(&result, args.foreground, run_hooks, false)?;
+                let show_branch =
+                    plans.others.len() + plans.branch_only.len() + plans.current.iter().len() > 1;
+                for result in &plans.others {
+                    handle_remove_output(result, args.foreground, run_hooks, false, show_branch)?;
                 }
-                for result in plans.branch_only {
-                    handle_remove_output(&result, args.foreground, run_hooks, false)?;
+                for result in &plans.branch_only {
+                    handle_remove_output(result, args.foreground, run_hooks, false, show_branch)?;
                 }
-                if let Some(result) = plans.current {
-                    handle_remove_output(&result, args.foreground, run_hooks, false)?;
+                if let Some(ref result) = plans.current {
+                    handle_remove_output(result, args.foreground, run_hooks, false, show_branch)?;
+                }
+
+                if json_mode {
+                    let json_items: Vec<serde_json::Value> = plans
+                        .others
+                        .iter()
+                        .chain(&plans.branch_only)
+                        .chain(plans.current.as_ref())
+                        .map(RemoveResult::to_json)
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json_items)?);
                 }
 
                 if !plans.errors.is_empty() {
@@ -976,6 +982,7 @@ fn handle_merge_command(args: MergeArgs) -> anyhow::Result<()> {
         verify: flag_pair(args.verify, args.no_hooks || args.no_verify),
         yes: args.yes,
         stage: args.stage,
+        format: args.format,
     })
 }
 

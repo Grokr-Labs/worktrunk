@@ -84,7 +84,7 @@ pub struct HookCommandSpec<'cfg, 'vars, 'name, 'path> {
     pub project_config: Option<&'cfg CommandConfig>,
     pub hook_type: HookType,
     pub extra_vars: &'vars [(&'vars str, &'vars str)],
-    pub name_filter: Option<&'name str>,
+    pub name_filters: &'name [String],
     pub display_path: Option<&'path Path>,
 }
 
@@ -105,11 +105,14 @@ pub fn prepare_hook_commands(
         project_config,
         hook_type,
         extra_vars,
-        name_filter,
+        name_filters,
         display_path,
     } = spec;
 
-    let parsed_filter = name_filter.map(ParsedFilter::parse);
+    let parsed_filters: Vec<ParsedFilter<'_>> = name_filters
+        .iter()
+        .map(|f| ParsedFilter::parse(f))
+        .collect();
     let mut commands = Vec::new();
 
     let display_path = display_path.map(|p| p.to_path_buf());
@@ -123,16 +126,13 @@ pub fn prepare_hook_commands(
     for (source, config) in sources {
         let Some(config) = config else { continue };
 
-        // Skip if filter specifies a different source
-        if !parsed_filter
-            .as_ref()
-            .is_none_or(|f| f.matches_source(source))
-        {
+        // Skip if all filters specify a different source
+        if !parsed_filters.is_empty() && !parsed_filters.iter().any(|f| f.matches_source(source)) {
             continue;
         }
 
         let prepared = prepare_commands(config, ctx, extra_vars, hook_type, source)?;
-        let filtered = filter_by_name(prepared, parsed_filter.as_ref().map(|f| f.name));
+        let filtered = filter_by_name(prepared, &parsed_filters);
         commands.extend(filtered.into_iter().map(|p| SourcedCommand {
             prepared: p,
             source,
@@ -144,19 +144,39 @@ pub fn prepare_hook_commands(
     Ok(commands)
 }
 
-/// Filter commands by name (returns empty vec if name not found).
-/// Empty name matches all commands (supports `user:` to mean "all user hooks").
+/// Filter commands by name (returns empty vec if no names match).
+/// Empty slice matches all commands. Each filter's name component is checked
+/// independently — empty names (from `user:` or `project:`) match all commands
+/// from that source (source filtering is handled by the caller).
 fn filter_by_name(
     commands: Vec<PreparedCommand>,
-    name_filter: Option<&str>,
+    parsed_filters: &[ParsedFilter<'_>],
 ) -> Vec<PreparedCommand> {
-    match name_filter {
-        Some(name) if !name.is_empty() => commands
-            .into_iter()
-            .filter(|cmd| cmd.name.as_deref() == Some(name))
-            .collect(),
-        _ => commands, // None or empty = match all
+    if parsed_filters.is_empty() {
+        return commands; // No filters = match all
     }
+
+    // Collect the non-empty name parts from filters
+    let filter_names: Vec<&str> = parsed_filters
+        .iter()
+        .map(|f| f.name)
+        .filter(|n| !n.is_empty())
+        .collect();
+
+    // If all filters have empty names (e.g., just "user:" or "project:"),
+    // match all commands (source filtering already handled by caller)
+    if filter_names.is_empty() {
+        return commands;
+    }
+
+    commands
+        .into_iter()
+        .filter(|cmd| {
+            cmd.name
+                .as_deref()
+                .is_some_and(|n| filter_names.contains(&n))
+        })
+        .collect()
 }
 
 /// A pipeline step with source information, for pipeline-aware execution.
@@ -169,61 +189,154 @@ pub struct SourcedStep {
 
 /// Format a summary description of a pipeline for display.
 ///
-/// Shows step names/counts with `→` separating serial steps.
-/// Named steps show their name; unnamed steps show their source (`user`/`project`).
-/// Example: "install → build, lint"
+/// Named steps show as `source:name`; unnamed steps are collapsed into a single
+/// `source ×N` count. Serial steps are separated by `;`, concurrent steps by `,`.
+/// Example: "user:install; user:build, user:lint"
 ///
-/// TODO: Rethink hook display presentation. Current issues:
-/// - Arrows (`→`) add visual noise and aren't obviously meaningful to users
-/// - Multiple unnamed steps from the same source repeat the label (`user → user`)
-/// - Source prefix was dropped for named steps (`user:bg` → `bg`) — less
-///   informative when both user and project hooks are present
-/// - Combined hook-type messages were split (`post-switch: X; post-start: Y`
-///   → two separate lines) — more verbose for the common create case
+/// TODO: The `source:` prefix on named steps may be too verbose when only one
+/// source is present (e.g., `user:bg` vs just `bg`). Consider prefixing only
+/// when both user and project hooks exist for the same hook type.
 fn format_pipeline_summary(steps: &[SourcedStep]) -> String {
-    let mut parts = Vec::new();
+    // All steps in a group share the same source.
+    let source_label = steps[0].source.to_string();
+
+    // Collect named labels per step (None = unnamed).
+    let mut parts: Vec<String> = Vec::new();
+    let mut unnamed_count: usize = 0;
+
     for step in steps {
-        let source_label = step.source.to_string();
-        match &step.step {
-            PreparedStep::Single(cmd) => {
-                let label = cmd.name.as_deref().unwrap_or(&source_label);
-                parts.push(cformat!("<bold>{}</>", label));
+        let step_names: Vec<Option<&str>> = match &step.step {
+            PreparedStep::Single(cmd) => vec![cmd.name.as_deref()],
+            PreparedStep::Concurrent(cmds) => cmds.iter().map(|c| c.name.as_deref()).collect(),
+        };
+
+        let named: Vec<_> = step_names
+            .iter()
+            .filter_map(|n| n.map(|name| cformat!("<bold>{source_label}:{name}</>")))
+            .collect();
+        unnamed_count += step_names.iter().filter(|n| n.is_none()).count();
+
+        if !named.is_empty() {
+            // Flush any pending unnamed count before named labels.
+            if unnamed_count > 0 {
+                parts.push(format_unnamed(&source_label, unnamed_count));
+                unnamed_count = 0;
             }
-            PreparedStep::Concurrent(cmds) => {
-                let names: Vec<String> = cmds
-                    .iter()
-                    .map(|c| {
-                        let label = c.name.as_deref().unwrap_or(&source_label);
-                        cformat!("<bold>{}</>", label)
-                    })
-                    .collect();
-                parts.push(names.join(", "));
-            }
+            parts.push(named.join(", "));
         }
     }
-    parts.join(" → ")
+
+    // Flush trailing unnamed count.
+    if unnamed_count > 0 {
+        parts.push(format_unnamed(&source_label, unnamed_count));
+    }
+
+    parts.join("; ")
+}
+
+fn format_unnamed(source_label: &str, count: usize) -> String {
+    if count == 1 {
+        cformat!("<bold>{source_label}</>")
+    } else {
+        cformat!("<bold>{source_label}</> ×{count}")
+    }
+}
+
+/// Announce and spawn background hooks for one or more hook types.
+///
+/// Displays a single combined summary line covering all hook types, then
+/// spawns each source group as an independent pipeline. Use this instead
+/// of calling `spawn_hook_pipeline` directly when multiple hook types
+/// fire together (e.g., post-switch + post-start on create).
+///
+/// Each pipeline carries its own `CommandContext` so that different hook types
+/// can use different contexts (e.g., post-remove uses the removed branch while
+/// post-switch uses the destination branch).
+///
+/// When `show_branch` is true, includes the branch name for disambiguation in batch
+/// contexts (e.g., prune removing multiple worktrees):
+/// `Running post-remove for feature: docs; post-switch for feature: zellij-tab`
+///
+/// Without `show_branch`: `Running post-switch: zellij-tab; post-start: deps, assets, docs`
+pub fn announce_and_spawn_background_hooks(
+    pipelines: Vec<(CommandContext<'_>, Vec<SourcedStep>)>,
+    show_branch: bool,
+) -> anyhow::Result<()> {
+    let non_empty: Vec<_> = pipelines
+        .into_iter()
+        .filter(|(_, steps)| !steps.is_empty())
+        .collect();
+    if non_empty.is_empty() {
+        return Ok(());
+    }
+
+    // Build combined summary, merging groups with the same hook type:
+    // "post-switch: zellij-tab; post-start: deps, assets, docs"
+    let display_path = non_empty
+        .iter()
+        .flat_map(|(_, g)| g.iter())
+        .find_map(|s| s.display_path.as_ref());
+
+    // Merge summaries by hook type so user+project for the same type
+    // shows "post-start: user_bg, project" not "post-start: user_bg; post-start: project".
+    let mut type_summaries: Vec<(HookType, Vec<String>)> = Vec::new();
+    for (_, group) in &non_empty {
+        let hook_type = group[0].hook_type;
+        let summary = format_pipeline_summary(group);
+        if let Some(entry) = type_summaries.iter_mut().find(|(ht, _)| *ht == hook_type) {
+            entry.1.push(summary);
+        } else {
+            type_summaries.push((hook_type, vec![summary]));
+        }
+    }
+
+    // In batch contexts (prune), use the first pipeline's branch for disambiguation.
+    // This is the removed branch — it identifies the triggering event even for
+    // post-switch hooks that fire as a consequence of the removal.
+    let branch_suffix = if show_branch {
+        non_empty
+            .first()
+            .and_then(|(ctx, _)| ctx.branch)
+            .map(|b| cformat!(" for <bold>{b}</>"))
+    } else {
+        None
+    };
+
+    let combined: String = type_summaries
+        .iter()
+        .map(|(ht, summaries)| {
+            let suffix = branch_suffix.as_deref().unwrap_or("");
+            format!("{ht}{suffix}: {}", summaries.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let message = match display_path {
+        Some(path) => {
+            let path_display = format_path_for_display(path);
+            cformat!("Running {combined} @ <bold>{path_display}</>")
+        }
+        None => format!("Running {combined}"),
+    };
+    eprintln!("{}", progress_message(message));
+
+    for (ctx, group) in non_empty {
+        spawn_hook_pipeline_quiet(&ctx, group)?;
+    }
+
+    Ok(())
 }
 
 /// Spawn a hook pipeline as a background `wt hook run-pipeline` process.
 ///
-/// Serializes the pipeline steps to JSON and spawns `wt hook run-pipeline`
-/// as a detached process, piping the spec to stdin. The background
-/// process expands templates just-in-time and executes each step via
-/// the detected shell.
-///
-/// Used for all post-* background hooks regardless of config format.
+/// Displays a summary line and spawns the pipeline. For multiple hook types
+/// that should share a single display line, use `announce_and_spawn_background_hooks`.
 pub fn spawn_hook_pipeline(ctx: &CommandContext, steps: Vec<SourcedStep>) -> anyhow::Result<()> {
-    use super::pipeline_spec::{PipelineCommandSpec, PipelineSpec, PipelineStepSpec};
-
     if steps.is_empty() {
         return Ok(());
     }
 
     let hook_type = steps[0].hook_type;
-    let source = steps[0].source;
     let display_path = steps[0].display_path.as_ref();
-
-    // Show summary: "Running post-start: install → build, lint"
     let summary = format_pipeline_summary(&steps);
     let message = match display_path {
         Some(path) => {
@@ -233,6 +346,18 @@ pub fn spawn_hook_pipeline(ctx: &CommandContext, steps: Vec<SourcedStep>) -> any
         None => format!("Running {hook_type}: {summary}"),
     };
     eprintln!("{}", progress_message(message));
+
+    spawn_hook_pipeline_quiet(ctx, steps)
+}
+
+/// Spawn a hook pipeline without displaying a summary line.
+///
+/// Used by `announce_and_spawn_background_hooks` which handles display separately.
+fn spawn_hook_pipeline_quiet(ctx: &CommandContext, steps: Vec<SourcedStep>) -> anyhow::Result<()> {
+    use super::pipeline_spec::{PipelineCommandSpec, PipelineSpec, PipelineStepSpec};
+
+    let hook_type = steps[0].hook_type;
+    let source = steps[0].source;
 
     // Extract base context from the first command. All steps share the same base context,
     // but per-step metadata (hook_name) is stripped — it gets injected per-step by the
@@ -272,18 +397,19 @@ pub fn spawn_hook_pipeline(ctx: &CommandContext, steps: Vec<SourcedStep>) -> any
     let spec = PipelineSpec {
         worktree_path: ctx.worktree_path.to_path_buf(),
         branch: ctx.branch_or_head().to_string(),
-        hook_type: hook_type.to_string(),
-        source: source.to_string(),
+        hook_type,
+        source,
         context,
         steps: spec_steps,
+        log_dir: ctx.repo.wt_logs_dir(),
     };
 
     let spec_json = serde_json::to_vec(&spec).context("failed to serialize pipeline spec")?;
 
     let wt_bin = std::env::current_exe().context("failed to resolve wt binary path")?;
 
-    let hook_log = HookLog::hook(source, hook_type, "pipeline");
-    let log_label = format!("{hook_type} {source} pipeline");
+    let hook_log = HookLog::hook(source, hook_type, "runner");
+    let log_label = format!("{hook_type} {source} runner");
 
     if let Err(err) = spawn_detached_exec(
         ctx.repo,
@@ -306,28 +432,34 @@ pub fn spawn_hook_pipeline(ctx: &CommandContext, steps: Vec<SourcedStep>) -> any
     Ok(())
 }
 
-/// Check if a name filter was provided but no commands matched.
+/// Check if name filters were provided but no commands matched.
 /// Returns an error listing available command names if so.
 pub(crate) fn check_name_filter_matched(
-    name_filter: Option<&str>,
+    name_filters: &[String],
     total_commands_run: usize,
     user_config: Option<&CommandConfig>,
     project_config: Option<&CommandConfig>,
 ) -> anyhow::Result<()> {
-    if let Some(filter_str) = name_filter
-        && total_commands_run == 0
-    {
-        let parsed = ParsedFilter::parse(filter_str);
+    if !name_filters.is_empty() && total_commands_run == 0 {
+        // Show the combined filter string in the error
+        let filter_display = name_filters.join(", ");
+
+        // Use the first filter to determine source scope for available commands,
+        // but collect across all filters' source scopes
+        let parsed_filters: Vec<ParsedFilter<'_>> = name_filters
+            .iter()
+            .map(|f| ParsedFilter::parse(f))
+            .collect();
         let mut available = Vec::new();
 
-        // Collect available commands from sources that match the filter
         let sources = [
             (HookSource::User, user_config),
             (HookSource::Project, project_config),
         ];
         for (source, config) in sources {
             let Some(config) = config else { continue };
-            if !parsed.matches_source(source) {
+            // Include this source if any filter matches it
+            if !parsed_filters.iter().any(|f| f.matches_source(source)) {
                 continue;
             }
             available.extend(
@@ -338,7 +470,7 @@ pub(crate) fn check_name_filter_matched(
         }
 
         return Err(worktrunk::git::GitError::HookCommandNotFound {
-            name: filter_str.to_string(),
+            name: filter_display,
             available,
         }
         .into());
@@ -364,11 +496,11 @@ pub fn run_hook_with_filter(
         user_config,
         project_config,
         hook_type,
-        name_filter,
+        name_filters,
         ..
     } = spec;
 
-    check_name_filter_matched(name_filter, commands.len(), user_config, project_config)?;
+    check_name_filter_matched(name_filters, commands.len(), user_config, project_config)?;
 
     if commands.is_empty() {
         return Ok(());
@@ -456,7 +588,7 @@ pub fn execute_hook(
     hook_type: HookType,
     extra_vars: &[(&str, &str)],
     failure_strategy: HookFailureStrategy,
-    name_filter: Option<&str>,
+    name_filters: &[String],
     display_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let project_config = ctx.repo.load_project_config()?;
@@ -471,7 +603,7 @@ pub fn execute_hook(
             project_config: proj_config,
             hook_type,
             extra_vars,
-            name_filter,
+            name_filters,
             display_path,
         },
         failure_strategy,
@@ -551,6 +683,8 @@ fn expand_lazy_template(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ansi_str::AnsiStr;
+    use insta::assert_snapshot;
 
     #[test]
     fn test_hook_source_display() {
@@ -637,11 +771,7 @@ mod tests {
             ])),
         ];
         let summary = format_pipeline_summary(&steps);
-        // Contains arrow and names (stripped of ANSI for assertion)
-        assert!(summary.contains("→"));
-        assert!(summary.contains("install"));
-        assert!(summary.contains("build"));
-        assert!(summary.contains("lint"));
+        assert_snapshot!(summary.ansi_strip(), @"user:install; user:build, user:lint");
     }
 
     #[test]
@@ -651,9 +781,48 @@ mod tests {
             make_sourced_step(PreparedStep::Single(make_cmd(None, "npm run build"))),
         ];
         let summary = format_pipeline_summary(&steps);
-        // Unnamed steps show source name ("user" from make_sourced_step)
-        assert!(summary.contains("user"));
-        assert!(summary.contains("→"));
+        assert_snapshot!(summary.ansi_strip(), @"user ×2");
+    }
+
+    #[test]
+    fn test_format_pipeline_summary_mixed_named_unnamed() {
+        let steps = vec![
+            make_sourced_step(PreparedStep::Single(make_cmd(None, "npm install"))),
+            make_sourced_step(PreparedStep::Single(make_cmd(Some("bg"), "npm run dev"))),
+        ];
+        let summary = format_pipeline_summary(&steps);
+        assert_snapshot!(summary.ansi_strip(), @"user; user:bg");
+    }
+
+    #[test]
+    fn test_format_pipeline_summary_single_unnamed() {
+        let steps = vec![make_sourced_step(PreparedStep::Single(make_cmd(
+            None,
+            "npm install",
+        )))];
+        let summary = format_pipeline_summary(&steps);
+        assert_snapshot!(summary.ansi_strip(), @"user");
+    }
+
+    #[test]
+    fn test_format_pipeline_summary_concurrent_then_concurrent() {
+        // The canonical pipeline: two concurrent groups in sequence.
+        // post-start = [
+        //     { install = "npm install", setup = "setup-db" },
+        //     { build = "npm run build", lint = "npm run lint" },
+        // ]
+        let steps = vec![
+            make_sourced_step(PreparedStep::Concurrent(vec![
+                make_cmd(Some("install"), "npm install"),
+                make_cmd(Some("setup"), "setup-db"),
+            ])),
+            make_sourced_step(PreparedStep::Concurrent(vec![
+                make_cmd(Some("build"), "npm run build"),
+                make_cmd(Some("lint"), "npm run lint"),
+            ])),
+        ];
+        let summary = format_pipeline_summary(&steps);
+        assert_snapshot!(summary.ansi_strip(), @"user:install, user:setup; user:build, user:lint");
     }
 
     #[test]

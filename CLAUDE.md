@@ -238,12 +238,12 @@ if msg.contains("no merge base") { return Ok(true); }
 
 When no structured alternative exists, document the fragility inline.
 
-## Background Operation Logs
+## Hook Output Logs
 
-All background logs are centralized in `.git/wt/logs/` (main worktree's git directory). Same operation on same branch overwrites the previous log.
+Hook output logs are centralized in `.git/wt/logs/` (main worktree's git directory). Same operation on same branch overwrites the previous log.
 
-- **Post-start commands**: `{branch}-{source}-post-start-{command}.log` (source: `user` or `project`)
-- **Background removal**: `{branch}-remove.log`
+- **Background hooks**: `{branch}-{hash}-{source}-{hook-type}-{name}-{hash}.log` (source: `user` or `project`)
+- **Background removal**: `{branch}-{hash}-remove.log`
 
 ## Coverage
 
@@ -266,6 +266,10 @@ cargo llvm-cov report --show-missing-lines | grep <file>   # find uncovered line
 For each uncovered function/method, either write a test or document why it's intentionally untested. Integration tests (via `assert_cmd_snapshot!`) do capture subprocess coverage.
 
 **Renames and moves:** File renames (`git mv`) can trigger codecov/patch failures on pre-existing uncovered lines — codecov treats changed lines in renamed files as part of the patch. If the uncovered lines are unchanged and existed before the rename, this is a false positive. Verify by checking coverage on `main` for the same lines under the old path.
+
+### "N functions have mismatched data" Warning
+
+`cargo llvm-cov` emits this warning (typically 5–20 functions) because it merges profiles from multiple compilation targets with minor codegen differences. Expected, harmless, no suppression flag exists. See [LLVM #97574](https://github.com/llvm/llvm-project/issues/97574).
 
 ## Benchmarks
 

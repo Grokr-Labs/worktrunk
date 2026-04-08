@@ -439,6 +439,12 @@ pub(crate) struct RemoveArgs {
     /// artifacts). Without this flag, removal fails if untracked files exist.
     #[arg(short, long)]
     pub(crate) force: bool,
+
+    /// Output format
+    ///
+    /// JSON prints structured result to stdout after removal completes.
+    #[arg(long, default_value = "text", help_heading = "Automation")]
+    pub(crate) format: SwitchFormat,
 }
 
 #[derive(Args)]
@@ -512,6 +518,12 @@ pub(crate) struct MergeArgs {
     /// What to stage before committing [default: all]
     #[arg(long)]
     pub(crate) stage: Option<crate::commands::commit::StageMode>,
+
+    /// Output format
+    ///
+    /// JSON prints structured result to stdout after merge completes.
+    #[arg(long, default_value = "text", help_heading = "Automation")]
+    pub(crate) format: SwitchFormat,
 }
 
 #[derive(Subcommand)]
@@ -587,6 +599,7 @@ When called without arguments, `wt switch` opens an interactive picker to browse
 | `1`–`5` | Switch preview tab |
 | `Alt-p` | Toggle preview panel |
 | `Ctrl-u`/`Ctrl-d` | Scroll preview up/down |
+<!-- Alt-r (remove worktree) works but is omitted: cursor resets after skim reload (#1695). Add once fixed. See #1881. -->
 
 **Preview tabs** — toggle with number keys:
 
@@ -1355,6 +1368,7 @@ if ctx['branch'].startswith('feature/') and 'backend' in ctx['repo']:
 ```console
 $ wt hook pre-merge              # Run all pre-merge hooks
 $ wt hook pre-merge test         # Run hooks named "test" from both sources
+$ wt hook pre-merge test build   # Run hooks named "test" and "build"
 $ wt hook pre-merge user:        # Run all user hooks
 $ wt hook pre-merge project:     # Run all project hooks
 $ wt hook pre-merge user:test    # Run only user's "test" hook

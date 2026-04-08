@@ -148,7 +148,7 @@ pub(crate) fn run_pre_switch_hooks(
             HookType::PreSwitch,
             &extra_vars,
             HookFailureStrategy::FailFast,
-            None,
+            &[],
             crate::output::pre_hook_display_path(pre_ctx.worktree_path),
         )?;
     }
@@ -237,27 +237,32 @@ pub(crate) fn spawn_switch_background_hooks(
 ) -> anyhow::Result<()> {
     let ctx = CommandContext::new(repo, config, branch, result.path(), yes);
 
-    for steps in super::hooks::prepare_background_hooks(
-        &ctx,
-        HookType::PostSwitch,
-        extra_vars,
-        hooks_display_path,
-    )? {
-        super::hooks::spawn_hook_pipeline(&ctx, steps)?;
-    }
-
-    if matches!(result, SwitchResult::Created { .. }) {
-        for steps in super::hooks::prepare_background_hooks(
+    let mut pipelines = Vec::new();
+    pipelines.extend(
+        super::hooks::prepare_background_hooks(
             &ctx,
-            HookType::PostStart,
+            HookType::PostSwitch,
             extra_vars,
             hooks_display_path,
-        )? {
-            super::hooks::spawn_hook_pipeline(&ctx, steps)?;
-        }
+        )?
+        .into_iter()
+        .map(|g| (ctx, g)),
+    );
+
+    if matches!(result, SwitchResult::Created { .. }) {
+        pipelines.extend(
+            super::hooks::prepare_background_hooks(
+                &ctx,
+                HookType::PostStart,
+                extra_vars,
+                hooks_display_path,
+            )?
+            .into_iter()
+            .map(|g| (ctx, g)),
+        );
     }
 
-    Ok(())
+    super::hooks::announce_and_spawn_background_hooks(pipelines, false)
 }
 
 /// Handle the switch command.
