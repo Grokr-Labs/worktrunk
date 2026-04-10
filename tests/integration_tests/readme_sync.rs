@@ -458,12 +458,14 @@ fn expand_command_placeholders(
             ExpandMode::Html => {
                 let html = parse_snapshot_content_for_docs(&snapshot_content)?;
                 let normalized = encode_leading_spaces(&trim_lines(&html));
-                // cmd= parameter uses the placeholder id (enables giallo syntax
-                // highlighting on the command line); prompt ($) is added via
-                // CSS ::before, so not included in HTML.
+                // cmd= parameter uses the displayed command (enables giallo
+                // syntax highlighting on the command line) rather than the
+                // placeholder id, so disambiguation suffixes like `(markers)`
+                // don't leak into the rendered prompt. Prompt ($) is added
+                // via CSS ::before, so not included in HTML.
                 format!(
                     "<!-- ⚠️ AUTO-GENERATED from tests/snapshots/{snapshot_name} — edit source to update -->\n\n\
-                     {{% terminal(cmd=\"{placeholder_id}\") %}}\n\
+                     {{% terminal(cmd=\"{display_cmd}\") %}}\n\
                      {normalized}\n\
                      {{% end %}}\n\n\
                      <!-- END AUTO-GENERATED -->",
