@@ -32,6 +32,37 @@ done
 If codecov fails, investigate with `task coverage` and
 `cargo llvm-cov report --show-missing-lines | grep <file>`.
 
+## CI Wait Budget After Pushing
+
+Every tend workflow caps at **60 minutes** wall clock. When responding to a
+mention or review that ends with a `git push`, the bot must leave the job
+before the cap or the workflow is cancelled mid-operation.
+
+Rules for post-push CI polling inside a single session:
+
+- **One polling loop per push.** After `git push`, run at most one
+  `for i in $(seq 1 10); do sleep 60; ...; done` loop (≤ 10 minutes). Do not
+  start a second loop for the same push.
+- **At most one fix iteration.** If CI fails, you may make one targeted
+  fix + push + one more polling loop. After that, stop.
+- **No chained waits.** Don't wait for the full required-check set *and
+  then* re-wait for `codecov/patch` — pick one and accept the other may
+  still be running when you exit.
+- **Exit with a summary comment, not silence.** When the budget is exhausted
+  and CI is still in-flight, post a short comment listing what you pushed
+  and that CI is still running. `tend-notifications` will retrigger the bot
+  on the next reply or failure.
+
+Watch the cumulative turn count: if a mention session is past ~150 assistant
+turns and still polling, it is about to hit the cap. Exit now.
+
+Reason: two tend-mention sessions (runs 24252583044 and 24254014913) were
+cancelled or ran to within 2 minutes of the 60-minute cap because the bot
+pushed code and then chained multiple 10–15 iteration polling loops while
+also iterating on CI failures. Earlier sweeps (see tracking issue #1889)
+documented the same pattern causing cascading API-limit failures on
+tend-review runs.
+
 ## Test Commands
 
 ```bash
