@@ -40,14 +40,16 @@ before the cap or the workflow is cancelled mid-operation.
 
 Rules for post-push CI polling inside a single session:
 
-- **One polling loop per push.** After `git push`, run at most one
-  `for i in $(seq 1 10); do sleep 60; ...; done` loop (≤ 10 minutes). Do not
-  start a second loop for the same push.
+- **One required-checks poll + one codecov poll per push.** After `git push`,
+  run at most one `for i in $(seq 1 10); do sleep 60; ...; done` loop
+  (≤ 10 minutes) for the required-check set, followed by the Codecov
+  Monitoring loop above (≤ 5 minutes). Total post-push wait ≤ 15 minutes;
+  do not restart either loop for the same push.
 - **At most one fix iteration.** If CI fails, you may make one targeted
-  fix + push + one more polling loop. After that, stop.
-- **No chained waits.** Don't wait for the full required-check set *and
-  then* re-wait for `codecov/patch` — pick one and accept the other may
-  still be running when you exit.
+  fix + push + one more required-checks-and-codecov round. After that, stop.
+- **Codecov is the only permitted chained wait.** Don't also wait for deploy
+  previews, benchmarks, or other non-required status contexts — accept they
+  may still be running when you exit.
 - **Exit with a summary comment, not silence.** When the budget is exhausted
   and CI is still in-flight, post a short comment listing what you pushed
   and that CI is still running. `tend-notifications` will retrigger the bot
