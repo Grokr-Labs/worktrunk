@@ -62,7 +62,7 @@ impl Repository {
         let base_sha = self.rev_parse_commit(&base)?;
         let head_sha = self.rev_parse_commit(&head)?;
 
-        if let Some(cached) = super::sha_cache::get_is_ancestor(self, &base_sha, &head_sha) {
+        if let Some(cached) = super::sha_cache::is_ancestor(self, &base_sha, &head_sha) {
             return Ok(cached);
         }
 
@@ -101,9 +101,7 @@ impl Repository {
         let branch_sha = self.rev_parse_commit(&branch)?;
         let target_sha = self.rev_parse_commit(&target)?;
 
-        if let Some(cached) =
-            super::sha_cache::get_has_added_changes(self, &branch_sha, &target_sha)
-        {
+        if let Some(cached) = super::sha_cache::has_added_changes(self, &branch_sha, &target_sha) {
             return Ok(cached);
         }
 
@@ -169,7 +167,7 @@ impl Repository {
         let base_sha = self.rev_parse_commit(&base)?;
         let head_sha = self.rev_parse_commit(&head)?;
 
-        if let Some(cached) = super::sha_cache::get_merge_conflicts(self, &base_sha, &head_sha) {
+        if let Some(cached) = super::sha_cache::merge_conflicts(self, &base_sha, &head_sha) {
             return Ok(cached);
         }
 
@@ -198,7 +196,7 @@ impl Repository {
         let base_sha = self.rev_parse_commit(&base)?;
 
         let cache_head = format!("{branch_head_sha}+{tree_sha}");
-        if let Some(cached) = super::sha_cache::get_merge_conflicts(self, &base_sha, &cache_head) {
+        if let Some(cached) = super::sha_cache::merge_conflicts(self, &base_sha, &cache_head) {
             return Ok(cached);
         }
 
@@ -362,8 +360,7 @@ impl Repository {
         let branch_sha = self.rev_parse_commit(&branch)?;
         let target_sha = self.rev_parse_commit(&target)?;
 
-        if let Some(cached) = super::sha_cache::get_merge_add_probe(self, &branch_sha, &target_sha)
-        {
+        if let Some(cached) = super::sha_cache::merge_add_probe(self, &branch_sha, &target_sha) {
             return Ok(cached);
         }
 
