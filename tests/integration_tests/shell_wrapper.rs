@@ -2972,6 +2972,14 @@ fi
     /// from that dir + system dirs (excluding cargo target directories). This
     /// prevents co-built binaries like `wt-perf` from leaking into completion
     /// output as external subcommands.
+    ///
+    /// NOTE: passing this via `.env("PATH", ...)` is not enough when spawning
+    /// a shell whose startup files mutate PATH: a typical `~/.zshenv` sources
+    /// `~/.cargo/env` (even for non-interactive `zsh -c`), and `~/.bashrc` or
+    /// `~/.bash_profile` can do the same. Invoke the shell with its
+    /// rc-bypass flag (`zsh -f`, `bash --noprofile --norc`) alongside the
+    /// PATH override. `/etc/zshenv` is always sourced and cannot be bypassed,
+    /// but it doesn't typically touch PATH on the environments we care about.
     fn completion_test_path(wt_bin: &std::path::Path) -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(wt_bin, dir.path().join("wt")).unwrap();
@@ -3012,8 +3020,11 @@ _wt_lazy_complete
         // helper) doesn't leak into completion output as an external subcommand.
         let (_dir, clean_path) = completion_test_path(&wt_bin);
 
+        // `-f` skips ~/.zshenv (which typically sources ~/.cargo/env and
+        // re-prepends ~/.cargo/bin). `/etc/zshenv` is still read — it can't
+        // be bypassed — but doesn't touch PATH in our test environments.
         let output = std::process::Command::new("zsh")
-            .arg("-c")
+            .args(["-f", "-c"])
             .arg(&script)
             .env("PATH", &clean_path)
             .output()
@@ -3045,8 +3056,10 @@ for c in "${{COMPREPLY[@]}}"; do echo "${{c%%	*}}"; done
 
         let (_dir, clean_path) = completion_test_path(&wt_bin);
 
+        // `--noprofile --norc` skips ~/.bash_profile, ~/.bashrc, /etc/profile
+        // so our clean PATH isn't polluted with ~/.cargo/bin etc.
         let output = std::process::Command::new("bash")
-            .arg("-c")
+            .args(["--noprofile", "--norc", "-c"])
             .arg(&script)
             .env("PATH", &clean_path)
             .output()
@@ -3189,7 +3202,7 @@ for c in "${{COMPREPLY[@]}}"; do echo "${{c%%	*}}"; done
         );
 
         let output = std::process::Command::new("bash")
-            .arg("-c")
+            .args(["--noprofile", "--norc", "-c"])
             .arg(&script)
             .env("PATH", &clean_path)
             .output()
