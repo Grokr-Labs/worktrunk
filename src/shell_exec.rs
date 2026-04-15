@@ -285,15 +285,25 @@ pub const DIRECTIVE_EXEC_FILE_ENV_VAR: &str = "WORKTRUNK_DIRECTIVE_EXEC_FILE";
 /// release.
 pub const DIRECTIVE_FILE_ENV_VAR: &str = "WORKTRUNK_DIRECTIVE_FILE";
 
-/// Scrub all directive file env vars from a `std::process::Command`.
+/// Env var set on every subprocess wt spawns, allowing external hook runners
+/// (e.g. Claude Code PreToolUse hooks that enforce git/gh governance) to
+/// detect wt lifecycle context without fragile process-tree walking.
+pub const HOOK_CONTEXT_ENV_VAR: &str = "WT_HOOK_CONTEXT";
+
+/// Scrub directive file env vars and set the wt hook-context marker on a
+/// `std::process::Command`.
 ///
-/// Prevents child processes from writing to the parent shell's directive
-/// files. Called by every code path that spawns external commands (Cmd,
-/// help pager, picker pager, background hooks, git credential helpers).
+/// Two orthogonal concerns bundled at the single subprocess-preparation
+/// seam: (1) strip directive file vars so child processes cannot write to
+/// the parent shell's directive files, and (2) export `WT_HOOK_CONTEXT=1`
+/// so downstream hook runners can detect wt lifecycle context. Called by
+/// every code path that spawns external commands (Cmd, help pager, picker
+/// pager, background hooks, git credential helpers).
 pub fn scrub_directive_env_vars(cmd: &mut std::process::Command) {
     cmd.env_remove(DIRECTIVE_CD_FILE_ENV_VAR);
     cmd.env_remove(DIRECTIVE_EXEC_FILE_ENV_VAR);
     cmd.env_remove(DIRECTIVE_FILE_ENV_VAR);
+    cmd.env(HOOK_CONTEXT_ENV_VAR, "1");
 }
 
 // ============================================================================
