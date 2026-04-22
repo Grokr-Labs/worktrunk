@@ -1,4 +1,5 @@
 mod alias;
+pub(crate) mod clean;
 pub(crate) mod command_approval;
 pub(crate) mod command_executor;
 pub(crate) mod commit;
@@ -28,6 +29,7 @@ pub(crate) mod step_commands;
 pub(crate) mod worktree;
 
 pub(crate) use alias::{AliasOptions, augment_step_help, step_alias};
+pub(crate) use clean::{CleanOptions, handle_clean};
 pub(crate) use config::{
     handle_claude_install, handle_claude_install_statusline, handle_claude_uninstall,
     handle_config_create, handle_config_show, handle_config_update, handle_hints_clear,

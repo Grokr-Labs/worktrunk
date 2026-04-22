@@ -217,9 +217,22 @@ and `auto_open_pr_if_missing` is disabled. Either open one manually \
     squash_merge_pr_via_api(repo, pr_number, branch)
         .context("squash-merge via GitHub REST API failed")?;
 
-    // Sync local `target_branch` to the new commit on origin so the caller's
-    // post-merge hooks (pull / deploy) see the new state.
+    // Fetch the new commit and advance the local `target_branch` ref so the
+    // caller's post-merge hooks see the updated state without needing a
+    // `git pull` against the target's worktree — which fails whenever the
+    // main worktree has unstaged / untracked files (brw memory JSONL being
+    // written live, IDE scratch state, etc.). `git update-ref` moves the
+    // branch pointer without touching any working tree, so sibling worktrees
+    // holding `target_branch` aren't disturbed either.
     repo.run_command(&["fetch", "origin", target_branch])?;
+    repo.run_command(&[
+        "update-ref",
+        &format!("refs/heads/{target_branch}"),
+        &format!("refs/remotes/origin/{target_branch}"),
+    ])
+    .with_context(|| {
+        format!("failed to advance local {target_branch} to origin/{target_branch}")
+    })?;
     Ok(pr_number)
 }
 
@@ -334,7 +347,17 @@ collision. Tree unchanged; recreated on `{new_branch}` with a single squash comm
     // failure `gh pr merge` hits in multi-worktree setups.
     squash_merge_pr_via_api(repo, new_pr, &new_branch)
         .context("failed to squash-merge replacement PR")?;
+    // Advance the local `target_branch` ref without touching any worktree —
+    // same reasoning as `finalize_via_github`'s update-ref call.
     repo.run_command(&["fetch", "origin", target_branch])?;
+    repo.run_command(&[
+        "update-ref",
+        &format!("refs/heads/{target_branch}"),
+        &format!("refs/remotes/origin/{target_branch}"),
+    ])
+    .with_context(|| {
+        format!("failed to advance local {target_branch} to origin/{target_branch}")
+    })?;
 
     Ok(ReconcileOutcome::Restacked {
         new_branch,

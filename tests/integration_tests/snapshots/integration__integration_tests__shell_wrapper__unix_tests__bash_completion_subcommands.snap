@@ -6,6 +6,7 @@ switch
 list
 remove
 merge
+clean
 step
 hook
 config

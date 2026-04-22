@@ -518,6 +518,27 @@ pub(crate) struct MergeArgs {
     pub(crate) format: SwitchFormat,
 }
 
+#[derive(Args)]
+pub(crate) struct CleanArgs {
+    /// Target branch used to decide what's merged
+    ///
+    /// Defaults to the repo's default branch.
+    #[arg(add = crate::completion::branch_value_completer())]
+    pub(crate) target: Option<String>,
+
+    /// Execute the plan
+    #[arg(short, long, help_heading = "Automation")]
+    pub(crate) yes: bool,
+
+    /// Print the plan without executing
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+
+    /// Include risky cases (dirty working trees, unmerged branches, locked worktrees, detached HEAD)
+    #[arg(long)]
+    pub(crate) force: bool,
+}
+
 // Ordering: by "core-ness". Primitive worktree operations first (switch, list,
 // remove), then composites built on top (merge), then subcommand namespaces
 // (step, hook, config). `remove` is a primitive and more core than `merge`,
@@ -1073,6 +1094,35 @@ lint = "cargo clippy"
 "#
     )]
     Merge(MergeArgs),
+
+    /// Clean up stale worktrees and merged branches
+    ///
+    /// Scans all worktrees, classifies each (merged/dirty/prunable/locked/…),
+    /// prints the plan, and — with `--yes` — removes the safe ones. Fills the
+    /// gap between a successful `wt merge` and a partial failure that leaves
+    /// a worktree behind.
+    #[command(after_long_help = r#"## Examples
+
+Print the plan (default, non-destructive):
+
+```console
+$ wt clean
+```
+
+Execute the plan:
+
+```console
+$ wt clean --yes
+```
+
+Include risky cases (dirty, unmerged, locked):
+
+```console
+$ wt clean --yes --force
+```
+"#)]
+    Clean(CleanArgs),
+
     /// Deprecated: use `wt switch` instead
     ///
     /// Interactive worktree picker (now integrated into `wt switch`).

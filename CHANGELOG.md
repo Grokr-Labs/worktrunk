@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.38.3 (Grokr-Labs fork)
+
+### Added
+
+- **`wt clean` subcommand** (BRW-HYOXK5). Fills the gap between "wt merge finished cleanly" and "something failed mid-cycle and left a worktree behind" — previously no single command triaged stale worktrees + merged branches. Scans all worktrees, classifies each (`primary` / `current` / `locked` / `prunable` / `dirty` / `not-merged` / `detached` / `merged`), prints the plan, and — with `--yes` — removes the safe cases. Default run is non-destructive (plan-only). `--force` includes risky cases (dirty, unmerged, locked, detached). Uses the same `remove_worktree_with_cleanup` API as `wt remove` so lifecycle hooks + trash-path staging stay consistent. `Prunable` worktrees (directory missing) dispatch to `git worktree prune`. Never touches the primary or current worktree regardless of `--force`.
+
+### Fixed
+
+- **Post-merge sync no longer fails when the main worktree has unstaged changes** (BRW-63O4BN). After `finalize_via_github` or `do_restack` completed, 0.38.2 ran `git pull --ff-only origin <target>` from the main worktree to advance the local ref — but `git pull` refuses when the worktree has unstaged changes (common in pwm-os with `.brw/memory/knowledge.jsonl` accumulating chatter). Fix: replace the worktree-touching `git pull --ff-only` with `git fetch` + `git update-ref refs/heads/<target> refs/remotes/origin/<target>`. `update-ref` advances the branch ref without touching any worktree's working tree, sidestepping the dirty-worktree class entirely. Surfaced 2026-04-22 on a pwm-os main worktree holding uncommitted brainwrap artifacts.
+
 ## 0.38.2 (Grokr-Labs fork)
 
 ### Fixed

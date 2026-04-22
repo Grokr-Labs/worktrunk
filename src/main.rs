@@ -46,27 +46,27 @@ use commands::handle_picker;
 use commands::repository_ext::RepositoryCliExt;
 use commands::worktree::{handle_no_ff_merge, handle_push};
 use commands::{
-    MergeOptions, OperationMode, RebaseResult, RemoveTarget, SquashResult, SwitchOptions,
-    add_approvals, clear_approvals, handle_claude_install, handle_claude_install_statusline,
-    handle_claude_uninstall, handle_completions, handle_config_create, handle_config_show,
-    handle_config_update, handle_configure_shell, handle_external_command, handle_hints_clear,
-    handle_hints_get, handle_hook_show, handle_init, handle_list, handle_logs_list, handle_merge,
-    handle_opencode_install, handle_opencode_uninstall, handle_promote, handle_rebase,
-    handle_show_theme, handle_squash, handle_state_clear, handle_state_clear_all, handle_state_get,
-    handle_state_set, handle_state_show, handle_switch, handle_unconfigure_shell,
-    handle_vars_clear, handle_vars_get, handle_vars_list, handle_vars_set, resolve_worktree_arg,
-    run_hook, step_commit, step_copy_ignored, step_diff, step_eval, step_for_each, step_prune,
-    step_relocate,
+    CleanOptions, MergeOptions, OperationMode, RebaseResult, RemoveTarget, SquashResult,
+    SwitchOptions, add_approvals, clear_approvals, handle_claude_install,
+    handle_claude_install_statusline, handle_claude_uninstall, handle_clean, handle_completions,
+    handle_config_create, handle_config_show, handle_config_update, handle_configure_shell,
+    handle_external_command, handle_hints_clear, handle_hints_get, handle_hook_show, handle_init,
+    handle_list, handle_logs_list, handle_merge, handle_opencode_install,
+    handle_opencode_uninstall, handle_promote, handle_rebase, handle_show_theme, handle_squash,
+    handle_state_clear, handle_state_clear_all, handle_state_get, handle_state_set,
+    handle_state_show, handle_switch, handle_unconfigure_shell, handle_vars_clear, handle_vars_get,
+    handle_vars_list, handle_vars_set, resolve_worktree_arg, run_hook, step_commit,
+    step_copy_ignored, step_diff, step_eval, step_for_each, step_prune, step_relocate,
 };
 use output::handle_remove_output;
 use worktrunk::git::BranchDeletionMode;
 
 use cli::{
-    ApprovalsCommand, CiStatusAction, Cli, Commands, ConfigCommand, ConfigPluginsClaudeCommand,
-    ConfigPluginsCommand, ConfigPluginsOpencodeCommand, ConfigShellCommand, DefaultBranchAction,
-    HintsAction, HookCommand, ListArgs, ListSubcommand, LogsAction, MarkerAction, MergeArgs,
-    PreviousBranchAction, RemoveArgs, StateCommand, StepCommand, SwitchArgs, SwitchFormat,
-    VarsAction,
+    ApprovalsCommand, CiStatusAction, CleanArgs, Cli, Commands, ConfigCommand,
+    ConfigPluginsClaudeCommand, ConfigPluginsCommand, ConfigPluginsOpencodeCommand,
+    ConfigShellCommand, DefaultBranchAction, HintsAction, HookCommand, ListArgs, ListSubcommand,
+    LogsAction, MarkerAction, MergeArgs, PreviousBranchAction, RemoveArgs, StateCommand,
+    StepCommand, SwitchArgs, SwitchFormat, VarsAction,
 };
 use worktrunk::HookType;
 
@@ -1113,6 +1113,15 @@ fn init_logging(verbose_level: u8) {
         .init();
 }
 
+fn handle_clean_command(args: CleanArgs) -> anyhow::Result<()> {
+    handle_clean(CleanOptions {
+        target_branch: args.target,
+        yes: args.yes,
+        dry_run: args.dry_run,
+        force: args.force,
+    })
+}
+
 fn handle_merge_command(args: MergeArgs) -> anyhow::Result<()> {
     if args.no_verify {
         eprintln!(
@@ -1147,6 +1156,7 @@ fn dispatch_command(
         Commands::Switch(args) => handle_switch_command(args),
         Commands::Remove(args) => handle_remove_command(args),
         Commands::Merge(args) => handle_merge_command(args),
+        Commands::Clean(args) => handle_clean_command(args),
         // `working_dir` is the top-level `-C <path>` flag, applied as the
         // child's current directory so global `-C` works for external
         // subcommands the same way it does for built-ins.

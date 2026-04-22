@@ -38,6 +38,7 @@ Commands:
   list    List worktrees and their status
   remove  Remove worktree; delete branch if merged
   merge   Merge current branch into the target branch
+  clean   Clean up stale worktrees and merged branches
   step    Run individual operations
   hook    Run configured hooks
   config  Manage user & project configs
