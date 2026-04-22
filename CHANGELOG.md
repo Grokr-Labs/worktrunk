@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.38.0 (Grokr-Labs fork)
+
+### Added
+
+- **Remote-aware push with divergence reconciliation in `wt merge`** ([Grokr-Labs/worktrunk#2](https://github.com/Grokr-Labs/worktrunk/pull/2)). Agent-only workflows frequently push a feature branch to `origin` for CI visibility before `wt merge` locally squashes it — the resulting non-fast-forward push previously forced a manual `wt-restack` dance (~15 min per merge in pwm-os). New built-in merge phase classifies local-vs-remote into four `RemoteState` variants (Absent / InSync / Ahead / Diverges) and dispatches to a configured reconciliation strategy:
+  - `remote-squash` (default) — delegate the squash to GitHub via `gh pr merge --squash --delete-branch`. Zero force-push, `main` receives one clean squash commit. Auto-opens a draft PR when one doesn't exist (configurable).
+  - `restack` — create `<branch>-vN` from the local squash, close the existing PR with a supersession note, open a replacement PR. The canonical pwm-os recovery pattern, lifted into the tool.
+  - `abort` — fail the merge with a structured error naming the recovery commands. No side effects.
+- New `[merge]` config fields on `MergeConfig`: `push_to_origin` (default `false`, opt-in so existing projects see no change), `on_diverged_remote` (default `remote-squash`), `auto_open_pr_if_missing` (default `true`). Tracked as BRW-IJBPWQ in the WT brainwrap project.
+- New module `src/commands/worktree/remote_reconcile.rs` (~450 LOC + 7 unit tests) with the state classifier and dispatch. `gh` invocations route through `shell_exec::Cmd` for consistent logging and concurrency-semaphore participation.
+
+### Invariants preserved
+
+- No `--force` push in any path. Every reconciliation creates new commits — either server-side via GitHub, or a fresh `-vN` branch locally.
+- `gh pr merge` remains internal to `wt`; developer-facing governance rules against direct `gh pr merge` invocation are unchanged.
+- Default behavior unchanged: `push_to_origin = false` preserves the pre-0.38 project-level push-hook model exactly. Repos without an explicit opt-in see no change.
+
 ## 0.37.1
 
 ### Improved
