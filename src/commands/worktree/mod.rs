@@ -90,7 +90,13 @@ mod types;
 
 // Re-export public types and functions
 pub use push::{handle_no_ff_merge, handle_push};
-pub use remote_reconcile::{ReconcileOutcome, reconcile_and_push};
+pub use remote_reconcile::reconcile_and_push;
+// `ReconcileOutcome` is exposed for downstream consumers (future subcommands /
+// external integrators). `handle_merge` itself doesn't inspect the variant —
+// every non-error outcome means GitHub already merged the target, so the
+// short-circuit is the same for all of them.
+#[allow(unused_imports)]
+pub use remote_reconcile::ReconcileOutcome;
 pub(crate) use resolve::paths_match;
 pub use resolve::{
     compute_worktree_path, is_worktree_at_expected_path, offer_bare_repo_worktree_path_fix,

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.38.1 (Grokr-Labs fork)
+
+### Fixed
+
+- **`wt merge` `[merge] push_to_origin` completes the merge cycle for every `RemoteState` variant, not only `Diverges`** (BRW-GMDEB5, the first production bug of 0.38.0). Previously `RemoteState::Absent` (first push), `InSync`, and `Ahead` pushed the feature branch but did NOT open a PR or squash-merge on GitHub, leaving local main ahead of origin and a stray feature branch on origin — the same silent-divergence class 0.38.0 was supposed to eliminate. The shared terminal (`finalize_via_github`) now runs for every pushed path, including `Restack`'s replacement PR. `ReconcileOutcome` variants each carry a `pr_number` so logs + downstream consumers can reference the merged PR. The caller short-circuits the local-merge phase for every non-error outcome since GitHub has already updated the target branch. Surfaced during the first real pwm-os migration merge on 2026-04-22.
+
 ## 0.38.0 (Grokr-Labs fork)
 
 ### Added

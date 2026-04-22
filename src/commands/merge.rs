@@ -15,8 +15,8 @@ use super::repository_ext::{
     RepositoryCliExt, check_not_default_branch, compute_integration_reason, is_primary_worktree,
 };
 use super::worktree::{
-    MergeOperations, ReconcileOutcome, RemoveResult, handle_no_ff_merge, handle_push,
-    path_mismatch, reconcile_and_push,
+    MergeOperations, RemoveResult, handle_no_ff_merge, handle_push, path_mismatch,
+    reconcile_and_push,
 };
 use worktrunk::git::BranchDeletionMode;
 
@@ -226,6 +226,11 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
     // hook left in place sees an already-in-sync remote and no-ops. Opt-in
     // via `[merge] push_to_origin = true` to preserve the pre-0.38 default
     // where origin push is the project's own `[[pre-merge]]` hook.
+    //
+    // Every non-error outcome of `reconcile_and_push` means GitHub has already
+    // squash-merged the feature into the target and deleted the branch —
+    // skip the local-merge phase below and let the post-merge sync hook pull
+    // the new target commit.
     if resolved.merge.push_to_origin() {
         let outcome = reconcile_and_push(
             repo,
@@ -238,16 +243,17 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
             "{}",
             info_message(format!("Remote reconciliation: {outcome:?}"))
         );
-        // When GitHub already merged + deleted the feature via remote-squash,
-        // skip the local-merge phase below — the target branch is already
-        // updated on origin and will be fetched by the post-merge sync hook.
-        if matches!(outcome, ReconcileOutcome::RemoteSquashed { .. }) {
-            eprintln!(
-                "{}",
-                info_message("Remote squash completed on GitHub; skipping local merge phase.")
-            );
-            return Ok(());
-        }
+        eprintln!(
+            "{}",
+            info_message("GitHub completed the squash-merge; skipping local merge phase.")
+        );
+        // Intentional: we skip the rest of handle_merge because the
+        // target branch is already updated on origin. Short-circuit avoids
+        // the local handle_push step (which would try to re-push the same
+        // content wt just pushed + merged) and leaves worktree cleanup,
+        // PR close, and post-merge hooks to the caller's next pipeline.
+        let _ = outcome;
+        return Ok(());
     }
 
     // Target worktree path for template variables (pre-merge and post-merge hooks).

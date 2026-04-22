@@ -95,21 +95,29 @@ fn count_commits(repo: &Repository, range: &str) -> anyhow::Result<u32> {
 }
 
 /// Outcome of [`reconcile_and_push`] for the caller to log / report.
+///
+/// Every variant that includes a `pr_number` means the GitHub side has already
+/// squash-merged the feature branch into the target — the local-merge phase in
+/// the caller should be skipped and the post-merge sync hook will pull the new
+/// target commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReconcileOutcome {
-    /// Remote branch did not exist; pushed normally.
-    FirstPush,
+    /// Remote branch didn't exist; pushed it and ran the GitHub squash-merge.
+    FirstPush { pr_number: u32 },
 
-    /// Remote already matched local; no push performed.
-    AlreadyInSync,
+    /// Remote already matched local; no push needed, ran GitHub squash-merge.
+    AlreadyPushed { pr_number: u32 },
 
-    /// Remote was ahead; rebased local onto remote, then pushed (fast-forward).
-    RebasedAndPushed,
+    /// Remote was ahead; rebased local onto remote, pushed, ran GitHub
+    /// squash-merge.
+    RebasedAndPushed { pr_number: u32 },
 
-    /// Delegated squash to GitHub via `gh pr merge --squash`.
+    /// Diverged remote + `RemoteSquash` strategy: delegated collapse to
+    /// GitHub via `gh pr merge --squash --delete-branch`.
     RemoteSquashed { pr_number: u32 },
 
-    /// Created `<branch>-vN`, closed the old PR, opened a new PR.
+    /// Diverged remote + `Restack` strategy: created `<branch>-vN`, closed the
+    /// old PR as superseded, opened a new PR, squash-merged the new PR.
     Restacked {
         new_branch: String,
         closed_pr: Option<u32>,
@@ -133,45 +141,74 @@ pub fn reconcile_and_push(
     strategy: RemoteDivergenceStrategy,
     auto_open_pr_if_missing: bool,
 ) -> anyhow::Result<ReconcileOutcome> {
-    match classify_remote_state(repo, branch)? {
+    let state = classify_remote_state(repo, branch)?;
+
+    // Handle the diverged paths up front — Restack and Abort don't share the
+    // Absent/InSync/Ahead terminal (they take their own code path).
+    if let RemoteState::Diverges { .. } = state {
+        match strategy {
+            RemoteDivergenceStrategy::Restack => {
+                return do_restack(repo, branch, target_branch, auto_open_pr_if_missing);
+            }
+            RemoteDivergenceStrategy::Abort => {
+                return Err(anyhow!(abort_message(branch, target_branch)));
+            }
+            RemoteDivergenceStrategy::RemoteSquash => {
+                // The diverged-but-pushable content IS the open PR's diff.
+                // Skip push — gh will squash the PR's existing commits
+                // server-side. Local squash would be force-push territory.
+            }
+        }
+    }
+
+    // Push the feature branch so the PR references the final (local) squash
+    // commit. RemoteSquash on a diverged remote is the exception handled above.
+    match &state {
         RemoteState::Absent => {
             repo.run_command(&["push", "-u", "origin", branch])
                 .context("initial push to origin failed")?;
-            Ok(ReconcileOutcome::FirstPush)
         }
-        RemoteState::InSync => Ok(ReconcileOutcome::AlreadyInSync),
+        RemoteState::InSync => { /* remote already matches local */ }
         RemoteState::Ahead => {
             repo.run_command(&["rebase", &format!("origin/{branch}")])
                 .context("rebase onto origin/<branch> failed")?;
             repo.run_command(&["push", "origin", branch])
                 .context("push after rebase failed")?;
-            Ok(ReconcileOutcome::RebasedAndPushed)
         }
-        RemoteState::Diverges { .. } => match strategy {
-            RemoteDivergenceStrategy::RemoteSquash => {
-                do_remote_squash(repo, branch, target_branch, auto_open_pr_if_missing)
-            }
-            RemoteDivergenceStrategy::Restack => do_restack(repo, branch, target_branch),
-            RemoteDivergenceStrategy::Abort => Err(anyhow!(abort_message(branch, target_branch))),
-        },
+        RemoteState::Diverges { .. } => { /* RemoteSquash: gh owns the collapse */ }
     }
+
+    // Single terminal step shared by every "push-then-merge" outcome. This is
+    // the fix for the P0: previously only Diverges+RemoteSquash reached this,
+    // leaving Absent/InSync/Ahead with a pushed branch but no PR + no merge.
+    let pr_number = finalize_via_github(repo, branch, target_branch, auto_open_pr_if_missing)?;
+
+    Ok(match state {
+        RemoteState::Absent => ReconcileOutcome::FirstPush { pr_number },
+        RemoteState::InSync => ReconcileOutcome::AlreadyPushed { pr_number },
+        RemoteState::Ahead => ReconcileOutcome::RebasedAndPushed { pr_number },
+        RemoteState::Diverges { .. } => ReconcileOutcome::RemoteSquashed { pr_number },
+    })
 }
 
-/// Delegate the squash to GitHub: `gh pr merge --squash` against the open PR
-/// for `branch`. Opens a draft PR first if one doesn't exist.
-fn do_remote_squash(
+/// Open (or find) a PR for `branch` targeting `target_branch`, squash-merge it
+/// via GitHub, delete the remote feature branch, then fetch the new
+/// `target_branch` tip locally. Shared terminal for every "the feature is now
+/// on origin, land it" outcome.
+fn finalize_via_github(
     repo: &Repository,
     branch: &str,
     target_branch: &str,
     auto_open_pr_if_missing: bool,
-) -> anyhow::Result<ReconcileOutcome> {
+) -> anyhow::Result<u32> {
     let pr_number = match find_open_pr(repo, branch)? {
         Some(n) => n,
         None if auto_open_pr_if_missing => open_draft_pr(repo, branch, target_branch)?,
         None => {
             return Err(anyhow!(
-                "remote-squash requires an open PR for branch '{branch}' targeting '{target_branch}'. \
-Either open one manually (`gh pr create --draft --head {branch} --base {target_branch}`) or set \
+                "wt merge expected an open PR for branch '{branch}' targeting '{target_branch}', \
+and `auto_open_pr_if_missing` is disabled. Either open one manually \
+(`gh pr create --draft --head {branch} --base {target_branch}`) or set \
 `[merge] auto_open_pr_if_missing = true` in wt config."
             ));
         }
@@ -189,18 +226,22 @@ Either open one manually (`gh pr create --draft --head {branch} --base {target_b
     )
     .context("gh pr merge --squash failed")?;
 
-    // Sync local `target_branch` to the new commit on origin.
+    // Sync local `target_branch` to the new commit on origin so the caller's
+    // post-merge hooks (pull / deploy) see the new state.
     repo.run_command(&["fetch", "origin", target_branch])?;
-    Ok(ReconcileOutcome::RemoteSquashed { pr_number })
+    Ok(pr_number)
 }
 
-/// Canonical pwm-os recovery pattern: create a fresh `-vN` branch from the
-/// local squash, push it, close the old PR, open a new one targeting the same
-/// base.
+/// Canonical pwm-os recovery pattern: create a fresh `<branch>-vN` from the
+/// local squash, push it, close the old PR as superseded, open a new PR, and
+/// finalize the cycle by squash-merging the new PR. The `_auto_open_pr_if_missing`
+/// argument is accepted for signature parity with the terminal step; restack
+/// always opens its replacement PR explicitly.
 fn do_restack(
     repo: &Repository,
     branch: &str,
     target_branch: &str,
+    _auto_open_pr_if_missing: bool,
 ) -> anyhow::Result<ReconcileOutcome> {
     let new_branch = next_vn_name(repo, branch)?;
 
@@ -243,6 +284,22 @@ collision. Tree unchanged; recreated on `{new_branch}` with a single squash comm
 
     let new_pr = parse_pr_number_from_url(&pr_url)
         .with_context(|| format!("failed to parse PR number from gh output: {pr_url:?}"))?;
+
+    // Squash-merge the replacement PR and fetch the new target so `wt merge`
+    // completes the full cycle rather than leaving a PR open for human
+    // attention.
+    gh(
+        repo,
+        &[
+            "pr",
+            "merge",
+            &new_pr.to_string(),
+            "--squash",
+            "--delete-branch",
+        ],
+    )
+    .context("failed to squash-merge replacement PR")?;
+    repo.run_command(&["fetch", "origin", target_branch])?;
 
     Ok(ReconcileOutcome::Restacked {
         new_branch,
