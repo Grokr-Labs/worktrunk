@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.38.4 (Grokr-Labs fork)
+
+### Added
+
+- **Agent sessions get `[merge] push_to_origin = true` by default** (BRW-U8V8T3). `wt` now detects agent-driven contexts via two env markers — `WT_HOOK_CONTEXT` (set by every wt subprocess spawn, see below) and `CLAUDE_AGENT_ID` (set by Claude Code) — and, when neither config layer explicitly sets `push_to_origin`, defaults to `true` in that context. Human interactive sessions keep the pre-`v0.38` opt-in default (`false`). Explicit `push_to_origin = false` in project or user config still wins over the context default. Eliminates the need for per-project `.config/wt.toml` or user-config `[projects.<x>.merge]` entries on every swarm-using repo — one less onboarding step per project.
+
+- **`WT_HOOK_CONTEXT=1` env var on every wt subprocess spawn**. Previously a local fork branch; now on main. Exports via `shell_exec::scrub_directive_env_vars`, the single subprocess-preparation seam that every wt spawn path already calls (Cmd builder, help pager, picker pager, background hooks, git credential helpers). Enables external hook runners (Claude Code PreToolUse hooks, CI scripts) to detect wt lifecycle context without walking the process tree — the previous approach was fragile because background hooks outlive the wt parent and tree depth varies by caller. Naming follows the existing `WORKTRUNK_DIRECTIVE_*_ENV_VAR` constants in `shell_exec.rs`.
+
 ## 0.38.3 (Grokr-Labs fork)
 
 ### Added

@@ -223,9 +223,15 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
 
     // Remote reconciliation: push feature branch to origin with divergence-
     // aware strategy. Runs before pre-merge hooks so any project-level push
-    // hook left in place sees an already-in-sync remote and no-ops. Opt-in
-    // via `[merge] push_to_origin = true` to preserve the pre-0.38 default
-    // where origin push is the project's own `[[pre-merge]]` hook.
+    // hook left in place sees an already-in-sync remote and no-ops.
+    //
+    // Defaults:
+    //   - Humans (interactive): opt-in via `[merge] push_to_origin = true`,
+    //     preserving the pre-0.38 default where origin push is the project's
+    //     own `[[pre-merge]]` hook.
+    //   - Agent sessions (WT_HOOK_CONTEXT or CLAUDE_AGENT_ID in env): on by
+    //     default, so swarm workflows get divergence reconciliation without
+    //     per-project config. Explicit `push_to_origin = false` still wins.
     //
     // Every non-error outcome of `reconcile_and_push` means GitHub has already
     // squash-merged the feature into the target and deleted the branch —

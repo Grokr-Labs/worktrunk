@@ -13,6 +13,35 @@ use crate::config::HooksConfig;
 use crate::config::commands::CommandConfig;
 use crate::config::is_default;
 
+/// Env var set by wt on every subprocess it spawns (see `shell_exec.rs`).
+/// Presence indicates the wt invocation is nested inside another wt
+/// lifecycle (e.g. a hook calling wt), which in the Grokr-Labs fork is
+/// treated as an "agent session" for context-dependent defaults.
+const HOOK_CONTEXT_ENV_VAR: &str = "WT_HOOK_CONTEXT";
+
+/// Env var set by Claude Code when executing tools. Presence indicates
+/// wt is running as part of an agent-driven workflow, where the swarm
+/// defaults (`push_to_origin = true`) are appropriate.
+const CLAUDE_AGENT_ENV_VAR: &str = "CLAUDE_AGENT_ID";
+
+/// Returns true when wt is running inside an agent-driven context, used
+/// to pick context-aware defaults for config fields (e.g. `push_to_origin`).
+/// Agent sessions default to the remote-reconciliation path; humans default
+/// to the pre-`v0.38` opt-in model.
+fn is_agent_session_default() -> bool {
+    is_agent_session(|var| std::env::var_os(var).is_some())
+}
+
+/// Pure core of [`is_agent_session_default`] — takes an env presence
+/// predicate so unit tests can inject arbitrary env without racing with
+/// the process-global env.
+fn is_agent_session<F>(env_present: F) -> bool
+where
+    F: Fn(&str) -> bool,
+{
+    env_present(HOOK_CONTEXT_ENV_VAR) || env_present(CLAUDE_AGENT_ENV_VAR)
+}
+
 /// What to stage before committing
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
@@ -353,9 +382,20 @@ impl MergeConfig {
         self.ff.unwrap_or(true)
     }
 
-    /// Whether wt pushes the feature branch to origin itself (default: false).
+    /// Whether wt pushes the feature branch to origin itself.
+    ///
+    /// Default is `false` for humans — origin push stays a project-level
+    /// `[[pre-merge]]` hook responsibility, preserving the pre-`v0.38` model.
+    /// In agent sessions (detected via `WT_HOOK_CONTEXT` or `CLAUDE_AGENT_ID`)
+    /// the default flips to `true` so agents get divergence-aware remote
+    /// reconciliation without per-project config opt-in — this eliminates the
+    /// manual `wt-restack` dance that swarm workflows previously required when
+    /// a feature branch was pushed to origin before the local squash.
+    ///
+    /// An explicit `push_to_origin = true|false` in config always wins over
+    /// the context-default.
     pub fn push_to_origin(&self) -> bool {
-        self.push_to_origin.unwrap_or(false)
+        self.push_to_origin.unwrap_or_else(is_agent_session_default)
     }
 
     /// Strategy for reconciling a diverged remote (default: `RemoteSquash`).
@@ -562,4 +602,61 @@ pub struct UserProjectOverrides {
 
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub aliases: BTreeMap<String, CommandConfig>,
+}
+
+#[cfg(test)]
+mod agent_session_default_tests {
+    use super::*;
+
+    #[test]
+    fn agent_session_false_when_no_env_set() {
+        assert!(!is_agent_session(|_| false));
+    }
+
+    #[test]
+    fn agent_session_true_when_wt_hook_context_set() {
+        assert!(is_agent_session(|v| v == HOOK_CONTEXT_ENV_VAR));
+    }
+
+    #[test]
+    fn agent_session_true_when_claude_agent_id_set() {
+        assert!(is_agent_session(|v| v == CLAUDE_AGENT_ENV_VAR));
+    }
+
+    #[test]
+    fn push_to_origin_defaults_false_for_humans() {
+        let config = MergeConfig::default();
+        let would_push = config.push_to_origin.unwrap_or(false);
+        assert!(!would_push);
+    }
+
+    #[test]
+    fn push_to_origin_defaults_true_for_agents() {
+        let config = MergeConfig::default();
+        let would_push = config.push_to_origin.unwrap_or(true);
+        assert!(would_push);
+    }
+
+    #[test]
+    fn explicit_false_wins_over_agent_default() {
+        let config = MergeConfig {
+            push_to_origin: Some(false),
+            ..Default::default()
+        };
+        let resolved = config.push_to_origin.unwrap_or(true);
+        assert!(
+            !resolved,
+            "explicit push_to_origin=false must win over agent default"
+        );
+    }
+
+    #[test]
+    fn explicit_true_same_in_agent_and_human() {
+        let config = MergeConfig {
+            push_to_origin: Some(true),
+            ..Default::default()
+        };
+        assert!(config.push_to_origin.unwrap_or(false));
+        assert!(config.push_to_origin.unwrap_or(true));
+    }
 }
