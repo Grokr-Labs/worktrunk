@@ -15,7 +15,8 @@ use super::repository_ext::{
     RepositoryCliExt, check_not_default_branch, compute_integration_reason, is_primary_worktree,
 };
 use super::worktree::{
-    MergeOperations, RemoveResult, handle_no_ff_merge, handle_push, path_mismatch,
+    MergeOperations, ReconcileOutcome, RemoveResult, handle_no_ff_merge, handle_push,
+    path_mismatch, reconcile_and_push,
 };
 use worktrunk::git::BranchDeletionMode;
 
@@ -219,6 +220,35 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
         }
         false // Already rebased, no rebase occurred
     };
+
+    // Remote reconciliation: push feature branch to origin with divergence-
+    // aware strategy. Runs before pre-merge hooks so any project-level push
+    // hook left in place sees an already-in-sync remote and no-ops. Opt-in
+    // via `[merge] push_to_origin = true` to preserve the pre-0.38 default
+    // where origin push is the project's own `[[pre-merge]]` hook.
+    if resolved.merge.push_to_origin() {
+        let outcome = reconcile_and_push(
+            repo,
+            &current_branch,
+            &target_branch,
+            resolved.merge.on_diverged_remote(),
+            resolved.merge.auto_open_pr_if_missing(),
+        )?;
+        eprintln!(
+            "{}",
+            info_message(format!("Remote reconciliation: {outcome:?}"))
+        );
+        // When GitHub already merged + deleted the feature via remote-squash,
+        // skip the local-merge phase below — the target branch is already
+        // updated on origin and will be fetched by the post-merge sync hook.
+        if matches!(outcome, ReconcileOutcome::RemoteSquashed { .. }) {
+            eprintln!(
+                "{}",
+                info_message("Remote squash completed on GitHub; skipping local merge phase.")
+            );
+            return Ok(());
+        }
+    }
 
     // Target worktree path for template variables (pre-merge and post-merge hooks).
     // Computed once here so both hook sites can reference it.

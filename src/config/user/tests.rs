@@ -465,6 +465,7 @@ fn test_merge_config_serde() {
         remove: Some(true),
         verify: Some(true),
         ff: None,
+        ..Default::default()
     };
     let json = serde_json::to_string(&config).unwrap();
     let parsed: MergeConfig = serde_json::from_str(&json).unwrap();
@@ -673,6 +674,7 @@ fn test_merge_merge_config() {
         remove: Some(true),
         verify: Some(true),
         ff: Some(true),
+        ..Default::default()
     };
     let override_config = MergeConfig {
         squash: Some(false), // Override
@@ -681,6 +683,7 @@ fn test_merge_merge_config() {
         remove: Some(false), // Override
         verify: None,        // Fall back to base
         ff: Some(false),     // Override
+        ..Default::default()
     };
 
     let merged = base.merge_with(&override_config);
@@ -864,6 +867,7 @@ fn test_effective_merge_with_partial_override() {
             remove: Some(true),
             verify: Some(true),
             ff: Some(true),
+            ..Default::default()
         },
         ..Default::default()
     };
@@ -878,6 +882,7 @@ fn test_effective_merge_with_partial_override() {
                 remove: None,
                 verify: None,
                 ff: None,
+                ..Default::default()
             },
             ..Default::default()
         },
@@ -991,6 +996,7 @@ fn test_merge_config_accessor_methods_with_values() {
         remove: Some(false),
         verify: Some(false),
         ff: Some(false),
+        ..Default::default()
     };
     assert!(!config.squash());
     assert!(!config.commit());

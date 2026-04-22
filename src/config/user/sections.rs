@@ -233,6 +233,40 @@ impl Merge for CommitConfig {
     }
 }
 
+/// How to reconcile a local-squashed feature branch against a remote branch
+/// that already carries the pre-squash commits.
+///
+/// In agent-only workflows, feature branches are pushed to origin with
+/// intermediate commits because CI, PR review, and multi-session handoffs all
+/// require the commits to be resolvable on the remote. When `wt merge` later
+/// produces a local squash of the same branch, a plain `git push` fails
+/// non-fast-forward. Force-push is disallowed by convention in governed repos.
+///
+/// This enum names the three strategies available to recover without
+/// force-pushing.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
+)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
+#[serde(rename_all = "kebab-case")]
+pub enum RemoteDivergenceStrategy {
+    /// Delegate the squash to the remote via `gh pr merge --squash`. Safest and
+    /// fastest: no force-push, no secondary branches, `main` ends up with one
+    /// clean squash commit. Requires an open PR (wt opens a draft one if
+    /// absent and `auto_open_pr_if_missing` is true).
+    #[default]
+    RemoteSquash,
+
+    /// Create `<branch>-vN` from the local squash, push it as a fresh remote
+    /// branch, close the current PR as superseded, and open a new PR with the
+    /// `-vN` branch as head. Canonical pwm-os recovery pattern.
+    Restack,
+
+    /// Fail the merge with a clear error naming the recovery commands. No
+    /// side effects. Intended for careful human-supervised runs.
+    Abort,
+}
+
 /// Configuration for the `wt merge` command
 ///
 /// Note: `stage` defaults from `[commit]` section, not here.
@@ -263,6 +297,29 @@ pub struct MergeConfig {
     /// Fast-forward merge instead of creating a merge commit (default: true)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ff: Option<bool>,
+
+    /// Have wt push the feature branch to origin during merge, with divergence-
+    /// aware reconciliation (default: false).
+    ///
+    /// When false, origin push remains a project-level `[[pre-merge]]` hook
+    /// responsibility — the pre-`v0.38` behavior. When true, wt performs the
+    /// push itself using the strategy in `on_diverged_remote` if the remote
+    /// has diverged from the local squash. Projects enabling this should
+    /// remove their project-level push hook to avoid a double-push.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_to_origin: Option<bool>,
+
+    /// Strategy to apply when `push_to_origin = true` and the local squash
+    /// diverges from the remote (default: `remote-squash`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_diverged_remote: Option<RemoteDivergenceStrategy>,
+
+    /// When `push_to_origin = true` and remote-squash requires an open PR
+    /// that doesn't exist, auto-open a draft PR targeting the merge target
+    /// (default: true). Setting false causes the merge to abort with a clear
+    /// error telling the operator to open the PR first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_open_pr_if_missing: Option<bool>,
 }
 
 impl MergeConfig {
@@ -295,6 +352,21 @@ impl MergeConfig {
     pub fn ff(&self) -> bool {
         self.ff.unwrap_or(true)
     }
+
+    /// Whether wt pushes the feature branch to origin itself (default: false).
+    pub fn push_to_origin(&self) -> bool {
+        self.push_to_origin.unwrap_or(false)
+    }
+
+    /// Strategy for reconciling a diverged remote (default: `RemoteSquash`).
+    pub fn on_diverged_remote(&self) -> RemoteDivergenceStrategy {
+        self.on_diverged_remote.unwrap_or_default()
+    }
+
+    /// Whether to auto-open a draft PR when remote-squash needs one (default: true).
+    pub fn auto_open_pr_if_missing(&self) -> bool {
+        self.auto_open_pr_if_missing.unwrap_or(true)
+    }
 }
 
 impl Merge for MergeConfig {
@@ -306,6 +378,11 @@ impl Merge for MergeConfig {
             remove: other.remove.or(self.remove),
             verify: other.verify.or(self.verify),
             ff: other.ff.or(self.ff),
+            push_to_origin: other.push_to_origin.or(self.push_to_origin),
+            on_diverged_remote: other.on_diverged_remote.or(self.on_diverged_remote),
+            auto_open_pr_if_missing: other
+                .auto_open_pr_if_missing
+                .or(self.auto_open_pr_if_missing),
         }
     }
 }
