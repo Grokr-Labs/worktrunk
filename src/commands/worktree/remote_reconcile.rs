@@ -113,7 +113,7 @@ pub enum ReconcileOutcome {
     RebasedAndPushed { pr_number: u32 },
 
     /// Diverged remote + `RemoteSquash` strategy: delegated collapse to
-    /// GitHub via `gh pr merge --squash --delete-branch`.
+    /// GitHub via the REST merge endpoint (no local checkout of target).
     RemoteSquashed { pr_number: u32 },
 
     /// Diverged remote + `Restack` strategy: created `<branch>-vN`, closed the
@@ -214,22 +214,65 @@ and `auto_open_pr_if_missing` is disabled. Either open one manually \
         }
     };
 
-    gh(
-        repo,
-        &[
-            "pr",
-            "merge",
-            &pr_number.to_string(),
-            "--squash",
-            "--delete-branch",
-        ],
-    )
-    .context("gh pr merge --squash failed")?;
+    squash_merge_pr_via_api(repo, pr_number, branch)
+        .context("squash-merge via GitHub REST API failed")?;
 
     // Sync local `target_branch` to the new commit on origin so the caller's
     // post-merge hooks (pull / deploy) see the new state.
     repo.run_command(&["fetch", "origin", target_branch])?;
     Ok(pr_number)
+}
+
+/// Squash-merge an open PR and delete its remote head branch via `gh api` REST
+/// calls. Replaces `gh pr merge --squash --delete-branch`, which internally
+/// does a local checkout of the target branch — that checkout fails when a
+/// sibling worktree (typical in agent-only multi-worktree setups) already
+/// holds the target. REST calls are worktree-independent.
+///
+/// `gh api` substitutes `:owner` / `:repo` from the repo's primary remote.
+fn squash_merge_pr_via_api(repo: &Repository, pr_number: u32, branch: &str) -> anyhow::Result<()> {
+    // PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge with
+    // merge_method=squash. GitHub uses the PR title + body as the squash
+    // commit message by default, which matches `gh pr merge --squash`
+    // behavior from a user's perspective.
+    gh(
+        repo,
+        &[
+            "api",
+            "-X",
+            "PUT",
+            &pr_merge_api_path(pr_number),
+            "-f",
+            "merge_method=squash",
+        ],
+    )
+    .context("squash-merge PUT returned non-success")?;
+
+    // DELETE /repos/{owner}/{repo}/git/refs/heads/{branch}. Tolerate the case
+    // where the branch is already gone (e.g., the squash-merge above already
+    // deleted it via the repo's auto-delete setting).
+    match gh(repo, &["api", "-X", "DELETE", &branch_ref_api_path(branch)]) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("422") || msg.contains("Reference does not exist") {
+                Ok(())
+            } else {
+                Err(e.context("delete remote branch via gh api failed"))
+            }
+        }
+    }
+}
+
+/// GitHub REST API path for squash-merging a PR via `gh api`. `:owner` / `:repo`
+/// are gh placeholders resolved from the current repo's primary remote.
+fn pr_merge_api_path(pr_number: u32) -> String {
+    format!("repos/:owner/:repo/pulls/{pr_number}/merge")
+}
+
+/// GitHub REST API path for the git ref of a remote branch.
+fn branch_ref_api_path(branch: &str) -> String {
+    format!("repos/:owner/:repo/git/refs/heads/{branch}")
 }
 
 /// Canonical pwm-os recovery pattern: create a fresh `<branch>-vN` from the
@@ -287,18 +330,10 @@ collision. Tree unchanged; recreated on `{new_branch}` with a single squash comm
 
     // Squash-merge the replacement PR and fetch the new target so `wt merge`
     // completes the full cycle rather than leaving a PR open for human
-    // attention.
-    gh(
-        repo,
-        &[
-            "pr",
-            "merge",
-            &new_pr.to_string(),
-            "--squash",
-            "--delete-branch",
-        ],
-    )
-    .context("failed to squash-merge replacement PR")?;
+    // attention. Uses the REST API to avoid the local-checkout-of-target
+    // failure `gh pr merge` hits in multi-worktree setups.
+    squash_merge_pr_via_api(repo, new_pr, &new_branch)
+        .context("failed to squash-merge replacement PR")?;
     repo.run_command(&["fetch", "origin", target_branch])?;
 
     Ok(ReconcileOutcome::Restacked {
@@ -504,5 +539,26 @@ mod tests {
         assert!(msg.contains("main"));
         assert!(msg.contains("remote-squash"));
         assert!(msg.contains("restack"));
+    }
+
+    #[test]
+    fn pr_merge_api_path_uses_gh_owner_repo_placeholders() {
+        assert_eq!(pr_merge_api_path(722), "repos/:owner/:repo/pulls/722/merge");
+    }
+
+    #[test]
+    fn branch_ref_api_path_escapes_nothing_and_keeps_slashes() {
+        assert_eq!(
+            branch_ref_api_path("feat/some-branch"),
+            "repos/:owner/:repo/git/refs/heads/feat/some-branch"
+        );
+    }
+
+    #[test]
+    fn branch_ref_api_path_handles_plain_branch_name() {
+        assert_eq!(
+            branch_ref_api_path("main"),
+            "repos/:owner/:repo/git/refs/heads/main"
+        );
     }
 }

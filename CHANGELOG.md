@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.38.2 (Grokr-Labs fork)
+
+### Fixed
+
+- **`wt merge` `[merge] push_to_origin` now works in multi-worktree setups** (BRW-GJ0R6W). Previously `wt merge` on a feature worktree failed at the squash-merge step when a sibling worktree held the target branch (the typical pwm-os operating mode — main worktree held in parallel with feature worktrees). Root cause: `gh pr merge --squash --delete-branch` does a local checkout of the target that collides with the sibling. Fix: swap to `gh api` REST calls (`PUT /repos/:owner/:repo/pulls/{n}/merge` with `merge_method=squash`, then `DELETE /repos/:owner/:repo/git/refs/heads/{branch}`) which don't touch local refs and complete the merge server-side. Tolerates `422 Reference does not exist` on the delete in case the repo's auto-delete-branch setting already removed the head. Surfaced 2026-04-22 by a parallel session executing the manual workaround on pwm-os PR #722.
+
 ## 0.38.1 (Grokr-Labs fork)
 
 ### Fixed
