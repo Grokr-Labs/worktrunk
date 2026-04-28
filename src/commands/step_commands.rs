@@ -120,16 +120,127 @@ pub enum SquashResult {
     NoNetChanges,
 }
 
+/// Reconcile the squash anchor against the upstream remote-tracking ref.
+///
+/// Resolves `<target>` (a local branch name) to a squash anchor that matches what
+/// GitHub's server-side merge will see. The flow:
+///
+/// 1. If `<target>` has no upstream (no `refs/remotes/<remote>/<target>` after fallback),
+///    return `Ok(None)` so the caller falls back to the local ref. Pure-local repos and
+///    detached refs work unchanged.
+/// 2. Otherwise, optionally `git fetch <remote> <target>` so the tracking ref is current
+///    (skip when `no_fetch` is set, or when the local SHA already equals the cached
+///    upstream — `target` was just synced).
+/// 3. Compare local `<target>` against `<remote>/<target>`:
+///    - Equal → no-op, return the upstream short ref.
+///    - Local strictly behind → fast-forward via `git update-ref` (BRW-63O4BN pattern,
+///      worktree-safe since it never touches a checkout). Return upstream short ref.
+///    - Local has commits upstream lacks → return `Err(GitError::DivergedTarget)` so
+///      `wt merge` refuses cleanly. Worktrunk's workflow puts no commits on local
+///      `<target>` outside of squash-merged PRs, so divergence here means the workflow
+///      was violated (manual local commits, a botched merge, sync drift between machines).
+///      Refusing surfaces the violation instead of laundering it through a squash.
+fn reconcile_squash_anchor(
+    repo: &Repository,
+    target: &str,
+    no_fetch: bool,
+) -> anyhow::Result<Option<String>> {
+    let Some(upstream_short) = repo.upstream_tracking_ref(target) else {
+        return Ok(None);
+    };
+    let upstream_full = format!("refs/remotes/{}", upstream_short);
+
+    let needs_fetch = !no_fetch
+        && match (
+            repo.run_command(&["rev-parse", "--verify", &format!("refs/heads/{}", target)]),
+            repo.run_command(&["rev-parse", "--verify", &upstream_full]),
+        ) {
+            (Ok(local), Ok(upstream)) => local.trim() != upstream.trim(),
+            _ => true,
+        };
+    if needs_fetch && let Some(remote) = Repository::remote_from_tracking_ref(&upstream_short) {
+        repo.run_command(&["fetch", remote, target])
+            .with_context(|| format!("failed to fetch {}/{}", remote, target))?;
+    }
+
+    let local_sha = repo
+        .run_command(&["rev-parse", "--verify", &format!("refs/heads/{}", target)])
+        .with_context(|| format!("failed to read refs/heads/{}", target))?
+        .trim()
+        .to_string();
+    let origin_sha = repo
+        .run_command(&["rev-parse", "--verify", &upstream_full])
+        .with_context(|| format!("failed to read {}", upstream_full))?
+        .trim()
+        .to_string();
+
+    if local_sha == origin_sha {
+        return Ok(Some(upstream_short));
+    }
+
+    // Local is ancestor of upstream → behind, fast-forward via update-ref (worktree-safe).
+    let local_is_ancestor = repo.run_command_check(&[
+        "merge-base",
+        "--is-ancestor",
+        &format!("refs/heads/{}", target),
+        &upstream_full,
+    ])?;
+    if local_is_ancestor {
+        repo.run_command(&[
+            "update-ref",
+            &format!("refs/heads/{}", target),
+            &upstream_full,
+        ])
+        .with_context(|| {
+            format!(
+                "failed to fast-forward refs/heads/{} to {}",
+                target, upstream_full
+            )
+        })?;
+        return Ok(Some(upstream_short));
+    }
+
+    // Local has commits not on upstream → diverged. List the divergent SHAs (capped)
+    // for the error message, then refuse. Use rev-list with --max-count to bound work
+    // for severely-out-of-sync repos.
+    let diverged_commits = repo
+        .run_command(&[
+            "rev-list",
+            "--max-count=20",
+            &format!("{}..refs/heads/{}", upstream_full, target),
+        ])
+        .ok()
+        .map(|out| {
+            out.lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| line.trim().to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Err(worktrunk::git::GitError::DivergedTarget {
+        target_branch: target.to_string(),
+        local_sha,
+        origin_sha,
+        diverged_commits,
+    }
+    .into())
+}
+
 /// Handle shared squash workflow (used by `wt step squash` and `wt merge`)
 ///
 /// # Arguments
 /// * `verify` - If true, run pre-commit hooks (false when --no-hooks flag is passed)
 /// * `stage` - CLI-provided stage mode. If None, uses the effective config default.
+/// * `no_fetch` - If true, skip the pre-squash `git fetch <remote> <target>` and rely on
+///   whatever remote-tracking ref is already cached locally. Use only for offline operators
+///   or when the operator has just fetched manually.
 pub fn handle_squash(
     target: Option<&str>,
     yes: bool,
     verify: bool,
     stage: Option<StageMode>,
+    no_fetch: bool,
 ) -> anyhow::Result<SquashResult> {
     // Load config once, run LLM setup prompt, then reuse config
     let mut config = UserConfig::load().context("Failed to load config")?;
@@ -181,6 +292,15 @@ pub fn handle_squash(
     // Get and validate target ref (any commit-ish for merge-base calculation)
     let integration_target = repo.require_target_ref(target)?;
 
+    // Reconcile against the remote-tracking ref so the squash matches GitHub's
+    // server-side diff regardless of how stale local <target> is. See BRW-6GRP8P:
+    // computing the squash from local <target> when origin has advanced via sibling
+    // PRs pollutes both the squash content and the commit message with already-merged
+    // work. We refuse rather than silently absorb local-only commits — local <target>
+    // must be equal to or behind origin/<target>.
+    let squash_anchor = reconcile_squash_anchor(repo, &integration_target, no_fetch)?
+        .unwrap_or(integration_target.clone());
+
     // Auto-stage changes before running pre-commit hooks so both beta and merge paths behave identically
     match stage_mode {
         StageMode::All => {
@@ -215,9 +335,11 @@ pub fn handle_squash(
         .map_err(worktrunk::git::add_hook_skip_hint)?;
     }
 
-    // Get merge base with target branch (required for squash)
+    // Get merge base with target branch (required for squash).
+    // Anchored on the remote-tracking ref when one exists so the squash content
+    // matches what GitHub will see; falls back to local target for repos without a remote.
     let merge_base = repo
-        .merge_base("HEAD", &integration_target)?
+        .merge_base("HEAD", &squash_anchor)?
         .context("Cannot squash: no common ancestor with target branch")?;
 
     // Count commits since merge base

@@ -122,6 +122,9 @@ Automation:
       --no-hooks
           Skip hooks
 
+      --no-fetch
+          Skip the pre-squash fetch of the target's remote-tracking ref
+
       --format <FORMAT>
           Output format
 

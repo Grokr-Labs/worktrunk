@@ -53,6 +53,10 @@ pub struct SquashArgs {
     #[arg(long)]
     pub(crate) stage: Option<crate::commands::commit::StageMode>,
 
+    /// Skip the pre-squash fetch of the target's remote-tracking ref
+    #[arg(long = "no-fetch", help_heading = "Automation")]
+    pub(crate) no_fetch: bool,
+
     /// Show prompt without running LLM
     ///
     /// Outputs the rendered prompt to stdout for debugging or manual piping.

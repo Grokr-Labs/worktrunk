@@ -253,6 +253,21 @@ pub enum GitError {
     NotRebased {
         target_branch: String,
     },
+    /// Local target branch has commits the upstream remote-tracking branch does not.
+    ///
+    /// Worktrunk expects local `<target>` to always be equal to or behind
+    /// `origin/<target>` — work flows in via squash-merged PRs and the post-merge
+    /// internal sync (BRW-63O4BN) keeps local in lockstep with origin. When local
+    /// has commits origin doesn't, the workflow has been violated upstream of the
+    /// current command. We refuse rather than silently absorb the local-only work
+    /// into a squash and surprise the operator.
+    DivergedTarget {
+        target_branch: String,
+        local_sha: String,
+        origin_sha: String,
+        /// SHAs of local commits not on `origin/<target>` (most recent first, capped).
+        diverged_commits: Vec<String>,
+    },
     PushFailed {
         target_branch: String,
         error: String,
@@ -723,6 +738,53 @@ impl GitError {
                         hint_message(cformat!("To abort, run <underline>git rebase --abort</>"))
                     )
                 }
+            }
+
+            GitError::DivergedTarget {
+                target_branch,
+                local_sha,
+                origin_sha,
+                diverged_commits,
+            } => {
+                let local_short = local_sha.get(..7).unwrap_or(local_sha);
+                let origin_short = origin_sha.get(..7).unwrap_or(origin_sha);
+                let preview = if diverged_commits.is_empty() {
+                    String::new()
+                } else {
+                    let shown: Vec<String> = diverged_commits
+                        .iter()
+                        .take(5)
+                        .map(|sha| sha.get(..7).unwrap_or(sha).to_string())
+                        .collect();
+                    let suffix = if diverged_commits.len() > 5 {
+                        format!(" (+{} more)", diverged_commits.len() - 5)
+                    } else {
+                        String::new()
+                    };
+                    cformat!(
+                        "\n  Diverged commits: <bold>{}</>{}",
+                        shown.join(", "),
+                        suffix
+                    )
+                };
+                let push_cmd = format!("git push origin {}", target_branch);
+                let reset_cmd = format!(
+                    "git update-ref refs/heads/{} refs/remotes/origin/{}",
+                    target_branch, target_branch
+                );
+                write!(
+                    f,
+                    "{}\n{}\n{}",
+                    error_message(cformat!(
+                        "<bold>{target_branch}</> has diverged from <bold>origin/{target_branch}</> (local {local_short}, origin {origin_short}){preview}"
+                    )),
+                    hint_message(cformat!(
+                        "Worktrunk expects <bold>{target_branch}</> to track <bold>origin/{target_branch}</>. Pick one:"
+                    )),
+                    hint_message(cformat!(
+                        "  Keep the local commits: <underline>{push_cmd}</>\n  Discard the local commits: <underline>{reset_cmd}</>"
+                    ))
+                )
             }
 
             GitError::NotRebased { target_branch } => {

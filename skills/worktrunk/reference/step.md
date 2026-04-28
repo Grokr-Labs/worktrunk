@@ -237,6 +237,9 @@ Automation:
       --no-hooks
           Skip hooks
 
+      --no-fetch
+          Skip the pre-squash fetch of the target's remote-tracking ref
+
 Global Options:
   -C <path>
           Working directory for this command

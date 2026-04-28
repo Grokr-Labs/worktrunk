@@ -347,6 +347,55 @@ impl Repository {
         .is_ok()
     }
 
+    /// Find the remote-tracking ref that the given local branch is configured to track.
+    ///
+    /// Returns the short form (e.g., `"origin/main"`) when `branch.<name>.remote` and
+    /// `branch.<name>.merge` are configured AND the corresponding `refs/remotes/<remote>/<name>`
+    /// exists locally. Returns `None` for branches with no upstream configured, or when
+    /// the configured upstream tracking ref hasn't been fetched yet.
+    ///
+    /// Falls back to `origin/<branch>` when no upstream is configured but
+    /// `refs/remotes/origin/<branch>` exists — covers the common case of branches
+    /// created locally without `--track`.
+    pub fn upstream_tracking_ref(&self, branch: &str) -> Option<String> {
+        let remote_key = format!("branch.{}.remote", branch);
+        let merge_key = format!("branch.{}.merge", branch);
+        let configured_remote = self
+            .run_command(&["config", "--get", &remote_key])
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let configured_merge = self
+            .run_command(&["config", "--get", &merge_key])
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        if let (Some(remote), Some(merge_ref)) = (configured_remote, configured_merge)
+            && let Some(short_branch) = merge_ref.strip_prefix("refs/heads/")
+        {
+            let candidate = format!("{}/{}", remote, short_branch);
+            if self.is_remote_tracking_branch(&candidate) {
+                return Some(candidate);
+            }
+        }
+
+        let fallback = format!("origin/{}", branch);
+        if self.is_remote_tracking_branch(&fallback) {
+            Some(fallback)
+        } else {
+            None
+        }
+    }
+
+    /// Extract the remote name from an `<remote>/<branch>` short ref.
+    ///
+    /// Returns `None` when the input does not contain a `/`. Designed for the
+    /// short forms returned by [`upstream_tracking_ref`](Self::upstream_tracking_ref).
+    pub fn remote_from_tracking_ref(tracking_ref: &str) -> Option<&str> {
+        tracking_ref.split_once('/').map(|(remote, _)| remote)
+    }
+
     /// Strip the remote prefix from a remote-tracking branch name.
     ///
     /// Given a name like `origin/username/feature-1`, returns `Some("username/feature-1")`

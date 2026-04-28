@@ -41,6 +41,10 @@ pub struct MergeOptions<'a> {
     pub yes: bool,
     /// CLI override for stage mode. None = use effective config default.
     pub stage: Option<super::commit::StageMode>,
+    /// Skip the pre-squash `git fetch <remote> <target>`. The squash anchor still
+    /// resolves to the existing remote-tracking ref; the user must trust that the
+    /// cached `refs/remotes/<remote>/<target>` is current.
+    pub no_fetch: bool,
     /// Output format (text or json).
     pub format: crate::cli::SwitchFormat,
 }
@@ -98,6 +102,7 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
         verify: verify_opt,
         yes,
         stage,
+        no_fetch,
         ..
     } = opts;
 
@@ -198,7 +203,8 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
                 Some(&target_branch),
                 yes,
                 verify,
-                Some(stage_mode)
+                Some(stage_mode),
+                no_fetch,
             )?,
             super::step_commands::SquashResult::Squashed
         )

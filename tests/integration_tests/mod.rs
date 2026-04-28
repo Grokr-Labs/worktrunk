@@ -41,6 +41,7 @@ pub mod list_column_alignment;
 pub mod list_config;
 pub mod list_progressive;
 pub mod merge;
+pub mod merge_stale_base;
 pub mod output_system_guard;
 pub mod post_start_commands;
 pub mod push;

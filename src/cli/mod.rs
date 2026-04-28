@@ -511,6 +511,10 @@ pub(crate) struct MergeArgs {
     #[arg(long)]
     pub(crate) stage: Option<crate::commands::commit::StageMode>,
 
+    /// Skip the pre-squash fetch of the target's remote-tracking ref
+    #[arg(long = "no-fetch", help_heading = "Automation")]
+    pub(crate) no_fetch: bool,
+
     /// Output format
     ///
     /// JSON prints structured result to stdout after merge completes.

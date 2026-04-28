@@ -132,6 +132,9 @@ Usage: <b><span class=c>wt merge</span></b> <span class=c>[OPTIONS]</span> <span
       <b><span class=c>--no-hooks</span></b>
           Skip hooks
 
+      <b><span class=c>--no-fetch</span></b>
+          Skip the pre-squash fetch of the target&#39;s remote-tracking ref
+
       <b><span class=c>--format</span></b><span class=c> &lt;FORMAT&gt;</span>
           Output format
 

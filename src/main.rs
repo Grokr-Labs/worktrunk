@@ -257,23 +257,28 @@ fn handle_step_command(action: StepCommand) -> anyhow::Result<()> {
                 commands::step_show_squash_prompt(args.target.as_deref())
             } else {
                 // Approval is handled inside handle_squash (like step_commit)
-                handle_squash(args.target.as_deref(), args.yes, verify, args.stage).map(|result| {
-                    match result {
-                        SquashResult::Squashed | SquashResult::NoNetChanges => {}
-                        SquashResult::NoCommitsAhead(branch) => {
-                            eprintln!(
-                                "{}",
-                                info_message(format!(
-                                    "Nothing to squash; no commits ahead of {branch}"
-                                ))
-                            );
-                        }
-                        SquashResult::AlreadySingleCommit => {
-                            eprintln!(
-                                "{}",
-                                info_message("Nothing to squash; already a single commit")
-                            );
-                        }
+                handle_squash(
+                    args.target.as_deref(),
+                    args.yes,
+                    verify,
+                    args.stage,
+                    args.no_fetch,
+                )
+                .map(|result| match result {
+                    SquashResult::Squashed | SquashResult::NoNetChanges => {}
+                    SquashResult::NoCommitsAhead(branch) => {
+                        eprintln!(
+                            "{}",
+                            info_message(format!(
+                                "Nothing to squash; no commits ahead of {branch}"
+                            ))
+                        );
+                    }
+                    SquashResult::AlreadySingleCommit => {
+                        eprintln!(
+                            "{}",
+                            info_message("Nothing to squash; already a single commit")
+                        );
                     }
                 })
             }
@@ -1139,6 +1144,7 @@ fn handle_merge_command(args: MergeArgs) -> anyhow::Result<()> {
         verify: flag_pair(args.verify, args.no_hooks || args.no_verify),
         yes: args.yes,
         stage: args.stage,
+        no_fetch: args.no_fetch,
         format: args.format,
     })
 }

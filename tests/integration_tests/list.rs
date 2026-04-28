@@ -828,6 +828,10 @@ mod tests {
     repo.run_git(&["add", "README.md", "lib.rs"]);
     repo.commit_staged_with_age("Initial commit", DAY, repo.root_path());
     repo.setup_remote("main");
+    // BRW-6GRP8P: setup_remote() is a no-op when origin already exists from the
+    // standard fixture, so the "Initial commit" hasn't been pushed yet. Push so
+    // local main and origin/main agree before any wt merge runs.
+    repo.run_git(&["push", "origin", "main"]);
 }
 
 /// Set up a Quick Start example repo with main + feature-auth.

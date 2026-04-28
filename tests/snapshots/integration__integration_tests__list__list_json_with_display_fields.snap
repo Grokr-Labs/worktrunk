@@ -68,7 +68,7 @@ exit_code: 0
     "remote": {
       "name": "origin",
       "branch": "main",
-      "ahead": 3,
+      "ahead": 0,
       "behind": 0
     },
     "worktree": {
@@ -77,8 +77,8 @@ exit_code: 0
     "is_main": true,
     "is_current": true,
     "is_previous": false,
-    "statusline": "main  \u001b[2m^\u001b[22m\u001b[2m⇡\u001b[22m  \u001b[32m⇡3\u001b[0m",
-    "symbols": "^⇡"
+    "statusline": "main  \u001b[2m^\u001b[22m\u001b[2m|\u001b[22m",
+    "symbols": "^|"
   },
   {
     "branch": "feature-a",

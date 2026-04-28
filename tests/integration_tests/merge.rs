@@ -149,6 +149,9 @@ fn test_merge_not_fast_forward(mut repo: TestRepo) {
 
     repo.run_git(&["add", "main.txt"]);
     repo.run_git(&["commit", "-m", "Add main file"]);
+    // Mirror the Worktrunk workflow contract: pushed to origin so wt merge's
+    // diverged-target precondition (BRW-6GRP8P) doesn't reject the test setup.
+    repo.run_git(&["push", "origin", "main"]);
 
     // Create a feature worktree branching from before the main commit
     let feature_wt = repo.add_feature();
@@ -220,6 +223,9 @@ fn test_merge_rebase_conflict(repo: TestRepo) {
     std::fs::write(repo.root_path().join("shared.txt"), "main version\n").unwrap();
     repo.run_git(&["add", "shared.txt"]);
     repo.run_git(&["commit", "-m", "Update shared.txt in main"]);
+    // Mirror the Worktrunk workflow contract: pushed to origin so wt merge's
+    // diverged-target precondition (BRW-6GRP8P) doesn't reject the test setup.
+    repo.run_git(&["push", "origin", "main"]);
 
     // Create a feature worktree branching from before the main commit
     // We need to create it from the original commit, not current main
@@ -1119,6 +1125,9 @@ pre-merge = [
     // Commit the config and mock cargo
     repo.run_git(&["add", ".config/wt.toml", ".bin"]);
     repo.run_git(&["commit", "-m", "Add project automation config"]);
+    // BRW-6GRP8P: keep origin/main in lockstep so the diverged-target precondition
+    // doesn't fire on the README scenario, which intentionally pre-commits config.
+    repo.run_git(&["push", "origin", "main"]);
 
     // Create a feature worktree and make multiple commits
     let feature_wt = repo.add_worktree("feature-auth");
@@ -1301,6 +1310,9 @@ fn test_merge_rebase_fast_forward(mut repo: TestRepo) {
     fs::write(repo.root_path().join("main-update.txt"), "main content").unwrap();
     repo.run_git(&["add", "main-update.txt"]);
     repo.run_git(&["commit", "-m", "Update main"]);
+    // BRW-6GRP8P: keep origin/main in lockstep so the diverged-target precondition
+    // doesn't fire on this fast-forward setup.
+    repo.run_git(&["push", "origin", "main"]);
 
     // Merge - should fast-forward (no commits to replay)
     assert_cmd_snapshot!(make_snapshot_cmd(
@@ -1328,6 +1340,9 @@ fn test_merge_rebase_true_rebase(mut repo: TestRepo) {
     fs::write(repo.root_path().join("main-update.txt"), "main content").unwrap();
     repo.run_git(&["add", "main-update.txt"]);
     repo.run_git(&["commit", "-m", "Update main"]);
+    // BRW-6GRP8P: keep origin/main in lockstep so the diverged-target precondition
+    // doesn't fire on this rebase setup.
+    repo.run_git(&["push", "origin", "main"]);
 
     // Merge - should show rebasing progress (has commits to replay)
     assert_cmd_snapshot!(make_snapshot_cmd(
@@ -1369,6 +1384,9 @@ fn test_merge_no_rebase_when_not_rebased(mut repo: TestRepo) {
     fs::write(repo.root_path().join("main-update.txt"), "main content").unwrap();
     repo.run_git(&["add", "main-update.txt"]);
     repo.run_git(&["commit", "-m", "Update main"]);
+    // BRW-6GRP8P: keep origin/main in lockstep so the diverged-target precondition
+    // doesn't fire before the --no-rebase check we're actually testing.
+    repo.run_git(&["push", "origin", "main"]);
 
     // --no-rebase should fail because feature is not rebased onto main
     assert_cmd_snapshot!(make_snapshot_cmd(
@@ -1409,6 +1427,9 @@ fn test_merge_primary_on_different_branch_dirty(mut repo: TestRepo) {
     fs::write(repo.root_path().join("file.txt"), "main version").unwrap();
     repo.run_git(&["add", "file.txt"]);
     repo.run_git(&["commit", "-m", "Update file on main"]);
+    // BRW-6GRP8P: keep origin/main in lockstep so the diverged-target precondition
+    // doesn't fire on this primary-not-on-default scenario.
+    repo.run_git(&["push", "origin", "main"]);
 
     // Create a develop branch from the previous commit (before the main update)
     let base_commit = String::from_utf8_lossy(
@@ -2406,6 +2427,9 @@ fn test_merge_no_ff_diverged_no_rebase(mut repo_with_main_worktree: TestRepo) {
 
     // Make a commit on main (diverge)
     repo.commit_in_worktree(&main_wt, "main.txt", "main content", "Advance main");
+    // BRW-6GRP8P: keep origin/main in lockstep so the diverged-target precondition
+    // doesn't fire before --no-rebase rejects the merge for a different reason.
+    repo.run_git_in(&main_wt, &["push", "origin", "main"]);
 
     // With --no-rebase, the merge fails because branches have diverged
     assert_cmd_snapshot!(make_snapshot_cmd(

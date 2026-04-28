@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased (Grokr-Labs fork)
+
+### Fixed
+
+- **`wt merge` squash anchors on `origin/<target>`, not stale local `<target>`** (BRW-6GRP8P). Previously the squash was computed from local `<target>`, so a stale local default branch (common when sibling PRs merged via the GitHub UI between sessions) polluted both the squash content and the commit message with already-merged sibling work. The PR's diff against `origin/<target>` then surfaced as a phantom conflict and required a close+cherry-pick+`-vN` recovery dance. Now `wt merge` and `wt step squash` resolve the target's upstream tracking ref, fetch it (skip with `--no-fetch`), best-effort fast-forward local `<target>` when it is strictly behind, and anchor the merge-base on `refs/remotes/origin/<target>`. The squash content matches what GitHub computes server-side regardless of local freshness. When local `<target>` has commits the upstream lacks the command refuses with a structured `DivergedTarget` error naming the divergent SHAs and the two recovery commands (`git push origin <target>` to keep them, `git update-ref refs/heads/<target> refs/remotes/origin/<target>` to discard them) — Worktrunk's contract is that local `<target>` always tracks `origin/<target>`, and divergence means the workflow was violated upstream of the merge. Surfaced 2026-04-28 on pwm-os PRs #799, #802 (cosmetic), and #807 (required cherry-pick recovery to PR #808).
+
+### Added
+
+- **`wt merge --no-fetch` and `wt step squash --no-fetch`** (BRW-6GRP8P). Skip the pre-squash `git fetch origin <target>` for offline operators or when the cached `refs/remotes/origin/<target>` is known fresh. The squash still anchors on the upstream tracking ref; the trade-off is operator-managed staleness.
+
 ## 0.38.4 (Grokr-Labs fork)
 
 ### Added
