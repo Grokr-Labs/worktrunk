@@ -255,12 +255,10 @@ pub enum GitError {
     },
     /// Local target branch has commits the upstream remote-tracking branch does not.
     ///
-    /// Worktrunk expects local `<target>` to always be equal to or behind
-    /// `origin/<target>` — work flows in via squash-merged PRs and the post-merge
-    /// internal sync (BRW-63O4BN) keeps local in lockstep with origin. When local
-    /// has commits origin doesn't, the workflow has been violated upstream of the
-    /// current command. We refuse rather than silently absorb the local-only work
-    /// into a squash and surprise the operator.
+    /// Worktrunk's contract: local `<target>` is always equal to or behind
+    /// `origin/<target>`. Divergence means the workflow was violated upstream
+    /// of this command, so we refuse rather than absorb local-only work into
+    /// a squash.
     DivergedTarget {
         target_branch: String,
         local_sha: String,

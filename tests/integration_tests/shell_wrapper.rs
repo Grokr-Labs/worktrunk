@@ -2399,8 +2399,7 @@ pre-merge = [
         // Commit the config
         repo.run_git(&["add", ".config/wt.toml", ".bin"]);
         repo.run_git(&["commit", "-m", "Add pre-merge hooks"]);
-        // BRW-6GRP8P: keep origin/main in lockstep so the diverged-target
-        // precondition doesn't reject the README scenario.
+        // wt merge refuses on divergent local <target>; keep origin/main aligned.
         repo.run_git(&["push", "origin", "main"]);
 
         // Create a feature worktree and make multiple commits

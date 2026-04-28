@@ -120,26 +120,17 @@ pub enum SquashResult {
     NoNetChanges,
 }
 
-/// Reconcile the squash anchor against the upstream remote-tracking ref.
+/// Resolve `<target>` to an upstream-anchored squash base.
 ///
-/// Resolves `<target>` (a local branch name) to a squash anchor that matches what
-/// GitHub's server-side merge will see. The flow:
+/// Returns the upstream short ref (e.g. `origin/main`) so the squash anchors on
+/// what GitHub will see. Returns `Ok(None)` when no upstream tracking exists
+/// (pure-local repo) — caller falls back to the local ref.
 ///
-/// 1. If `<target>` has no upstream (no `refs/remotes/<remote>/<target>` after fallback),
-///    return `Ok(None)` so the caller falls back to the local ref. Pure-local repos and
-///    detached refs work unchanged.
-/// 2. Otherwise, optionally `git fetch <remote> <target>` so the tracking ref is current
-///    (skip when `no_fetch` is set, or when the local SHA already equals the cached
-///    upstream — `target` was just synced).
-/// 3. Compare local `<target>` against `<remote>/<target>`:
-///    - Equal → no-op, return the upstream short ref.
-///    - Local strictly behind → fast-forward via `git update-ref` (BRW-63O4BN pattern,
-///      worktree-safe since it never touches a checkout). Return upstream short ref.
-///    - Local has commits upstream lacks → return `Err(GitError::DivergedTarget)` so
-///      `wt merge` refuses cleanly. Worktrunk's workflow puts no commits on local
-///      `<target>` outside of squash-merged PRs, so divergence here means the workflow
-///      was violated (manual local commits, a botched merge, sync drift between machines).
-///      Refusing surfaces the violation instead of laundering it through a squash.
+/// Refuses with `GitError::DivergedTarget` when local has commits the upstream
+/// lacks: Worktrunk's contract is that local `<target>` always tracks
+/// `origin/<target>`, so divergence means the workflow was violated upstream
+/// of this command — refusing surfaces that rather than laundering local-only
+/// commits through a squash.
 fn reconcile_squash_anchor(
     repo: &Repository,
     target: &str,
@@ -148,80 +139,60 @@ fn reconcile_squash_anchor(
     let Some(upstream_short) = repo.upstream_tracking_ref(target) else {
         return Ok(None);
     };
-    let upstream_full = format!("refs/remotes/{}", upstream_short);
+    let local_ref = format!("refs/heads/{}", target);
+    let upstream_ref = format!("refs/remotes/{}", upstream_short);
 
-    let needs_fetch = !no_fetch
-        && match (
-            repo.run_command(&["rev-parse", "--verify", &format!("refs/heads/{}", target)]),
-            repo.run_command(&["rev-parse", "--verify", &upstream_full]),
-        ) {
-            (Ok(local), Ok(upstream)) => local.trim() != upstream.trim(),
-            _ => true,
-        };
-    if needs_fetch && let Some(remote) = Repository::remote_from_tracking_ref(&upstream_short) {
-        repo.run_command(&["fetch", remote, target])
+    let read_sha = |refspec: &str| -> anyhow::Result<String> {
+        repo.run_command(&["rev-parse", "--verify", refspec])
+            .map(|s| s.trim().to_string())
+            .with_context(|| format!("failed to read {refspec}"))
+    };
+
+    let mut local_sha = read_sha(&local_ref)?;
+    let mut upstream_sha = read_sha(&upstream_ref)?;
+    if !no_fetch
+        && local_sha != upstream_sha
+        && let Some(remote) = Repository::remote_from_tracking_ref(&upstream_short)
+    {
+        repo.run_command(&["fetch", "--quiet", remote, target])
             .with_context(|| format!("failed to fetch {}/{}", remote, target))?;
+        local_sha = read_sha(&local_ref)?;
+        upstream_sha = read_sha(&upstream_ref)?;
     }
 
-    let local_sha = repo
-        .run_command(&["rev-parse", "--verify", &format!("refs/heads/{}", target)])
-        .with_context(|| format!("failed to read refs/heads/{}", target))?
-        .trim()
-        .to_string();
-    let origin_sha = repo
-        .run_command(&["rev-parse", "--verify", &upstream_full])
-        .with_context(|| format!("failed to read {}", upstream_full))?
-        .trim()
-        .to_string();
-
-    if local_sha == origin_sha {
+    if local_sha == upstream_sha {
         return Ok(Some(upstream_short));
     }
 
-    // Local is ancestor of upstream → behind, fast-forward via update-ref (worktree-safe).
-    let local_is_ancestor = repo.run_command_check(&[
-        "merge-base",
-        "--is-ancestor",
-        &format!("refs/heads/{}", target),
-        &upstream_full,
-    ])?;
+    let local_is_ancestor =
+        repo.run_command_check(&["merge-base", "--is-ancestor", &local_ref, &upstream_ref])?;
     if local_is_ancestor {
-        repo.run_command(&[
-            "update-ref",
-            &format!("refs/heads/{}", target),
-            &upstream_full,
-        ])
-        .with_context(|| {
-            format!(
-                "failed to fast-forward refs/heads/{} to {}",
-                target, upstream_full
-            )
-        })?;
+        // Fast-forward via update-ref (worktree-safe; reuses the BRW-63O4BN pattern).
+        repo.run_command(&["update-ref", &local_ref, &upstream_ref])
+            .with_context(|| format!("failed to fast-forward {local_ref} to {upstream_ref}"))?;
         return Ok(Some(upstream_short));
     }
 
-    // Local has commits not on upstream → diverged. List the divergent SHAs (capped)
-    // for the error message, then refuse. Use rev-list with --max-count to bound work
-    // for severely-out-of-sync repos.
     let diverged_commits = repo
         .run_command(&[
             "rev-list",
             "--max-count=20",
-            &format!("{}..refs/heads/{}", upstream_full, target),
+            &format!("{upstream_ref}..{local_ref}"),
         ])
         .ok()
         .map(|out| {
             out.lines()
-                .filter(|line| !line.trim().is_empty())
-                .map(|line| line.trim().to_string())
-                .collect::<Vec<_>>()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(String::from)
+                .collect()
         })
         .unwrap_or_default();
 
     Err(worktrunk::git::GitError::DivergedTarget {
         target_branch: target.to_string(),
         local_sha,
-        origin_sha,
+        origin_sha: upstream_sha,
         diverged_commits,
     }
     .into())

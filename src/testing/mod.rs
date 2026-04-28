@@ -375,12 +375,12 @@ pub fn configure_cli_command(cmd: &mut Command) {
     // Remove $SHELL to avoid platform-dependent diagnostic output (macOS has /bin/zsh,
     // Linux has /bin/bash). Tests that need SHELL should set it explicitly.
     cmd.env_remove("SHELL");
-    // Scrub agent-context markers so test subprocesses don't inherit different
-    // config defaults (`push_to_origin = true`) when the test suite is invoked
-    // from inside `wt merge` or a Claude Code session. Tests that exercise
-    // agent-context behavior should set these explicitly.
-    cmd.env_remove("WT_HOOK_CONTEXT");
-    cmd.env_remove("CLAUDE_AGENT_ID");
+    // Scrub agent-context markers so subprocesses don't inherit defaults like
+    // `push_to_origin = true` when the test suite is invoked from inside
+    // `wt merge` or a Claude Code session.
+    for var in crate::shell_exec::AGENT_CONTEXT_ENV_VARS {
+        cmd.env_remove(var);
+    }
     // Remove PSModulePath to prevent false PowerShell detection on CI environments
     // where PowerShell Core is installed but not being used.
     cmd.env_remove("PSModulePath");
@@ -1174,10 +1174,9 @@ impl TestRepo {
     /// Create a commit with the given message.
     ///
     /// Pushes to origin afterward when the current branch already tracks an
-    /// origin branch. Mirrors the Worktrunk workflow contract (BRW-6GRP8P):
-    /// local `<target>` always tracks `origin/<target>`. Tests that intentionally
-    /// simulate a diverged local target should call the lower-level `git_command()`
-    /// directly instead of this helper.
+    /// origin branch, so fixtures match Worktrunk's contract that local
+    /// `<target>` always tracks `origin/<target>`. Tests that intentionally
+    /// simulate a diverged local target should call `git_command()` directly.
     pub fn commit(&self, message: &str) {
         // Create a file to ensure there's something to commit
         let file_path = self.root.join("file.txt");
@@ -1196,7 +1195,7 @@ impl TestRepo {
     /// Create a commit with a custom message (useful for testing malicious messages).
     ///
     /// Pushes to origin afterward when the current branch already tracks an
-    /// origin branch (BRW-6GRP8P contract).
+    /// origin branch (same workflow contract as `commit`).
     pub fn commit_with_message(&self, message: &str) {
         // Create file with message-derived name for deterministic commits
         // Use first 16 chars of message (sanitized) as filename
@@ -1220,12 +1219,9 @@ impl TestRepo {
 
     /// Push the current branch to origin when origin already tracks it.
     ///
-    /// Skips silently when origin isn't configured or the current branch
-    /// has no remote-tracking ref under `refs/remotes/origin/`. Used by
-    /// `commit()` / `commit_with_message()` so test fixtures never produce a
-    /// local target that has diverged from origin — Worktrunk's `wt merge`
-    /// flow refuses on divergent local targets per BRW-6GRP8P, so the same
-    /// invariant holds for tests as for real users.
+    /// Skips silently when origin isn't configured or the current branch has
+    /// no `refs/remotes/origin/<branch>` — `wt merge` refuses on divergent
+    /// local targets, so fixtures need to keep local in lockstep with origin.
     fn push_current_branch_if_tracked(&self) {
         if self.remote.is_none() {
             return;

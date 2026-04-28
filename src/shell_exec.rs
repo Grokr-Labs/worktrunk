@@ -290,6 +290,12 @@ pub const DIRECTIVE_FILE_ENV_VAR: &str = "WORKTRUNK_DIRECTIVE_FILE";
 /// detect wt lifecycle context without fragile process-tree walking.
 pub const HOOK_CONTEXT_ENV_VAR: &str = "WT_HOOK_CONTEXT";
 
+/// Env vars that flip wt config defaults to agent-context behavior (e.g.,
+/// `[merge].push_to_origin = true`). Tests scrub these so subprocesses don't
+/// inherit different defaults when the test suite is invoked from inside
+/// `wt merge` or a Claude Code session.
+pub const AGENT_CONTEXT_ENV_VARS: &[&str] = &[HOOK_CONTEXT_ENV_VAR, "CLAUDE_AGENT_ID"];
+
 /// Scrub directive file env vars and set the wt hook-context marker on a
 /// `std::process::Command`.
 ///
