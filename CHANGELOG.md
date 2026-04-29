@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (Grokr-Labs fork)
+## 0.38.5 (Grokr-Labs fork) — 2026-04-28
 
 ### Fixed
 
