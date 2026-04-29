@@ -1,0 +1,23 @@
+[projects."github.com/Grokr-Labs/pwm-os"]
+approved-commands = [
+    "cd worker && npm ci --ignore-scripts",
+    "git diff main --name-only | grep -q '^worker/' && (cd worker && npm run build) || true",
+    "git diff main --name-only | grep -q '^worker/' && (cd worker && npm test) || true",
+    "git diff main --name-only | grep -q '^gateway/' && (cd gateway && .venv/bin/python -m pytest tests/ -q) || true",
+    "git push -u origin HEAD",
+    "gh pr create --fill --body '' 2>/dev/null || true",
+    "git fetch origin && git pull origin main",
+    "rsync -avz --exclude node_modules --exclude .git --exclude dist worker/ grokrlabs.local:~/repos/pwm-os/worker/ && ssh grokrlabs.local 'cd ~/repos/pwm-os/worker && npm run build && pm2 restart pwm-worker' 2>/dev/null || echo '[wt] GrokrLabs deploy skipped (unreachable)'",
+    "gh pr merge --merge --delete-branch 2>/dev/null || true",
+    "ssh grokrlabs.local 'cd ~/repos/pwm-os/worker && node dist/client.js maintenance-start grokrlabs 10 wt-deploy' 2>/dev/null || true",
+    "ssh grokrlabs.local 'cd ~/repos/pwm-os/worker && node dist/client.js maintenance-end grokrlabs' 2>/dev/null || true",
+    "ssh grokrlabs.local 'cd ~/repos/pwm-os/worker && node dist/client.js infra-stop 2>/dev/null; sleep 2; node dist/client.js infra-start' 2>/dev/null || true",
+    "rsync -avz --exclude node_modules --exclude .git --exclude dist worker/ grokrlabs.local:~/repos/pwm-os/worker/ && ssh grokrlabs.local 'cd ~/repos/pwm-os/worker && npm run build && pm2 restart pwm-worker pwm-event-bridge' 2>/dev/null || echo '[wt] GrokrLabs deploy skipped (unreachable)'",
+    "ssh grokrlabs.local 'set -e; cd ~/repos/pwm-os && git fetch origin main && git reset --hard origin/main && cd worker && npm ci && npm run build && pm2 restart pwm-worker pwm-event-bridge' || echo '[wt] GrokrLabs deploy skipped (unreachable or failed)'",
+    "cd worker && npm ci --ignore-scripts && npm rebuild better-sqlite3",
+    "changed=$(git diff main --name-only -- 'scripts/*.sh'); [ -z \"$changed\" ] || shellcheck -S error $changed",
+    "ssh grokrlabs.local 'cd ~/repos/pwm-os && git fetch origin main && git reset --hard origin/main && bash scripts/wt-grokrlabs-deploy.sh' || echo '[wt] GrokrLabs deploy skipped or failed (check script output above)'",
+    "ssh grokrlabs.local 'bash ~/repos/pwm-os/scripts/wt-heartbeat-restart.sh' || echo '[wt] infra heartbeat restart failed (check script output above)'",
+    "ssh grokrlabs.local 'cd ~/repos/pwm-os/worker && node dist/client.js pipeline-stop 2>/dev/null; sleep 2; node dist/client.js pipeline-start' 2>/dev/null || true",
+    "ssh grokrlabs.local 'cd ~/repos/pwm-os/worker && node dist/client.js probe-scheduler-stop 2>/dev/null; sleep 2; node dist/client.js probe-scheduler-start' 2>/dev/null || true",
+]

@@ -1,0 +1,17 @@
+worktree-path = "{{ repo_path }}/.worktrees/{{ branch | sanitize }}"
+
+[commit.generation]
+command = "MAX_THINKING_TOKENS=0 claude -p --no-session-persistence --model=haiku --tools='' --disable-slash-commands --setting-sources='' --system-prompt=''"
+
+# Per-project [merge] overrides. wt 0.38 accepts [merge] only in user config,
+# so project-specific policy lands here scoped by project identifier. See
+# BRW-9IWP94 (pwm-os migration) and BRW-<follow-up> (allow [merge] in project
+# config itself) in the WT brainwrap project.
+
+# pwm-os — built-in remote reconciliation during merge, replacing the former
+# project-level push + pr pre-merge hooks. `remote-squash` delegates divergence
+# handling to GitHub (no force-push; main gets one clean squash commit).
+[projects."github.com/Grokr-Labs/pwm-os".merge]
+push_to_origin = true
+on_diverged_remote = "remote-squash"
+auto_open_pr_if_missing = true
