@@ -1,0 +1,90 @@
+name: e2e-remote-reconcile
+
+# End-to-end coverage for `wt merge`'s `reconcile_and_push` against a real
+# GitHub sandbox repo (BRW-J23HNY). Each test creates a throwaway
+# `JonathanWorks/wt-e2e-<random>` private repo, drives the appropriate
+# pre-state, runs `wt merge`, asserts on the outcome, and tears down on Drop.
+#
+# Manual-dispatch-only — these tests hit the live GitHub API and create+delete
+# repos, so we don't run them on every push or PR. Trigger via the Actions tab
+# ("Run workflow") or `gh workflow run e2e-remote-reconcile`.
+#
+# Required secret:
+#   WT_E2E_GITHUB_TOKEN — a PAT for the JonathanWorks account with `repo` and
+#   `delete_repo` scopes. Used by `gh` to create+delete sandbox repos and open
+#   PRs against them. Configure under Settings → Secrets and variables → Actions.
+#
+# Note: the Grokr-Labs/worktrunk fork has GitHub Actions disabled by default
+# (zero historical workflow runs). This workflow won't fire until Actions is
+# manually enabled via the Actions tab. See the fleet rollout SOP.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# Workflow only reads source; PAT in WT_E2E_GITHUB_TOKEN handles the
+# sandbox-repo writes against JonathanWorks (a different account from the
+# repo owner anyway). Default GITHUB_TOKEN gets read-only contents.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -C debuginfo=0
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          # The default GITHUB_TOKEN persists in `.git/config` after checkout
+          # and would be exposed to subsequent steps. We don't push back to
+          # this repo — sandbox writes use the PAT in WT_E2E_GITHUB_TOKEN
+          # against a different account.
+          persist-credentials: false
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Authenticate gh
+        env:
+          GH_TOKEN: ${{ secrets.WT_E2E_GITHUB_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::WT_E2E_GITHUB_TOKEN secret is not configured."
+            exit 1
+          fi
+          gh auth status
+
+      - name: Run E2E reconcile tests
+        env:
+          GH_TOKEN: ${{ secrets.WT_E2E_GITHUB_TOKEN }}
+          GIT_AUTHOR_NAME: wt-e2e
+          GIT_AUTHOR_EMAIL: wt-e2e@example.com
+          GIT_COMMITTER_NAME: wt-e2e
+          GIT_COMMITTER_EMAIL: wt-e2e@example.com
+        run: |
+          cargo test --test integration -- --ignored e2e_remote_reconcile
+
+      - name: Sweep leaked sandbox repos older than 1 hour
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.WT_E2E_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                || date -u -v-1H +%Y-%m-%dT%H:%M:%SZ)
+          echo "Sweeping wt-e2e-* repos older than ${cutoff}…"
+          gh repo list JonathanWorks --limit 1000 --json name,createdAt \
+            --jq ".[] | select(.name | startswith(\"wt-e2e-\")) | select(.createdAt < \"${cutoff}\") | .name" \
+            | while read -r leaked; do
+                echo "  deleting JonathanWorks/${leaked}"
+                gh repo delete "JonathanWorks/${leaked}" --yes || true
+              done

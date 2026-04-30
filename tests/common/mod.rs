@@ -8,6 +8,10 @@ pub use worktrunk::testing::mock_commands;
 pub use worktrunk::testing::*;
 
 pub mod list_snapshots;
+// Throwaway GitHub sandbox repos for E2E reconcile_and_push tests. Tests
+// using this module are `#[ignore]`-gated and only run via
+// `cargo test -- --ignored e2e_remote_reconcile`.
+pub mod sandbox_repo;
 // Progressive output tests use PTY and are Unix-only for now
 #[cfg(unix)]
 pub mod progressive_output;
