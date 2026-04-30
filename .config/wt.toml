@@ -8,7 +8,6 @@ docs = "cd docs && zola serve -p {{ branch | hash_port }}"
 clippy = "pre-commit run clippy --all-files || true"
 build = "cargo test --no-run --all-targets --locked --all-features"
 install = "cargo install --path ."
-sync = 'if [ "{{ target }}" = "main" ]; then git pull && git push; fi'
 
 [[pre-merge]]
 pre-commit = 'if [ -n "$MSYSTEM" ]; then SKIP=lychee-system pre-commit run --all-files; else pre-commit run --all-files; fi'

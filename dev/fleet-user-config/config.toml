@@ -15,3 +15,12 @@ command = "MAX_THINKING_TOKENS=0 claude -p --no-session-persistence --model=haik
 push_to_origin = true
 on_diverged_remote = "remote-squash"
 auto_open_pr_if_missing = true
+
+# worktrunk fork — same v0.38 reconciliation path. Agent sessions already get
+# this via WT_HOOK_CONTEXT auto-detection; the explicit block ensures human
+# sessions on the worktrunk repo also use update-ref-based main sync instead
+# of the removed legacy [post-merge].sync (BRW-9HNIR4).
+[projects."github.com/Grokr-Labs/worktrunk".merge]
+push_to_origin = true
+on_diverged_remote = "remote-squash"
+auto_open_pr_if_missing = true

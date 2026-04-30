@@ -6,7 +6,7 @@
       "type": "skill-md",
       "description": "Guidance for Worktrunk, a CLI tool for managing git worktrees. Covers configuration (user config at ~/.config/worktrunk/config.toml and project hooks at .config/wt.toml), usage, and troubleshooting. Use for \"setting up commit message generation\", \"configuring hooks\", \"automating tasks\", or general worktrunk questions.",
       "url": "./worktrunk/SKILL.md",
-      "digest": "sha256:d0ffe760d8c3d12fcb5490893e1af12a75e831eb3a2960518e95c2881673c5ac"
+      "digest": "sha256:ac1c5316a7b2b278d3f2773fc4cb2bc8eeddc06bb4888e073210941bb193f5cf"
     }
   ]
 }
