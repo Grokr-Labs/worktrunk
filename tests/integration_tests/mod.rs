@@ -27,6 +27,7 @@ pub mod default_branch;
 pub mod diagnostic;
 pub mod directives;
 pub mod doc_templates;
+pub mod e2e_remote_reconcile;
 pub mod e2e_shell;
 pub mod e2e_shell_post_start;
 pub mod eval;
