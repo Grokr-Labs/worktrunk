@@ -541,6 +541,12 @@ pub(crate) struct CleanArgs {
     /// Include risky cases (dirty working trees, unmerged branches, locked worktrees, detached HEAD)
     #[arg(long)]
     pub(crate) force: bool,
+
+    /// Output format
+    ///
+    /// JSON prints the plan + cleanup summary as a structured object on stdout.
+    #[arg(long, default_value = "text", help_heading = "Automation")]
+    pub(crate) format: SwitchFormat,
 }
 
 // Ordering: by "core-ness". Primitive worktree operations first (switch, list,
@@ -1124,6 +1130,14 @@ Include risky cases (dirty, unmerged, locked):
 ```console
 $ wt clean --yes --force
 ```
+
+Emit the plan + cleanup summary as JSON for programmatic consumers (e.g., `brw doctor`, brainwrap onboarding wizard, future `wt clean --auto`):
+
+```console
+$ wt clean --format=json --dry-run
+```
+
+The JSON shape is `{"worktrees": [...], "summary": {...}}` — each worktree carries `path`, `branch`, `classification` (merged/dirty/prunable/locked/not-merged/detached/primary/current), `action` (clean|skip), and a one-line `reason`. The summary aggregates `total`, `to_clean`, `skipped`, and `by_classification`. When cleanup actually runs (no `--dry-run`, with `--yes`), failed worktrees gain `failed: true` + `error: "..."` fields and the summary gains `failures: N`.
 "#)]
     Clean(CleanArgs),
 

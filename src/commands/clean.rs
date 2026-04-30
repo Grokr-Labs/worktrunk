@@ -82,6 +82,11 @@ pub struct CleanOptions {
     pub yes: bool,
     pub dry_run: bool,
     pub force: bool,
+    /// Emit JSON instead of text. Suppresses the human-readable plan + status
+    /// stream on stderr; the structured output goes to stdout for programmatic
+    /// consumers (`brw doctor`, brainwrap onboarding wizard, future
+    /// `wt clean --auto`).
+    pub json: bool,
 }
 
 /// `wt clean` entry point.
@@ -102,7 +107,9 @@ pub fn handle_clean(opts: CleanOptions) -> anyhow::Result<()> {
         })
         .collect();
 
-    print_plan(&plan, opts.force);
+    if !opts.json {
+        print_plan(&plan, opts.force);
+    }
 
     let to_clean: Vec<_> = plan
         .iter()
@@ -114,6 +121,27 @@ pub fn handle_clean(opts: CleanOptions) -> anyhow::Result<()> {
             }
         })
         .collect();
+
+    // JSON mode short-circuits the entire human stderr stream; we still
+    // perform the cleanup (unless --dry-run or no --yes), but report through
+    // the structured output instead.
+    if opts.json {
+        // Determine whether we'll actually run cleanup.
+        let will_clean = !opts.dry_run && opts.yes && !to_clean.is_empty();
+        let mut failures: Vec<(std::path::PathBuf, String)> = Vec::new();
+        if will_clean {
+            for (wt, classification) in &to_clean {
+                if let Err(e) = clean_one(repo, wt, classification, &target_branch, opts.force) {
+                    failures.push((wt.path.clone(), e.to_string()));
+                }
+            }
+        }
+        emit_json(&plan, opts.force, &failures);
+        if !failures.is_empty() {
+            anyhow::bail!("wt clean: {} worktree(s) failed to clean", failures.len());
+        }
+        return Ok(());
+    }
 
     if to_clean.is_empty() {
         eprintln!("{}", info_message("Nothing to clean."));
@@ -173,6 +201,106 @@ pub fn handle_clean(opts: CleanOptions) -> anyhow::Result<()> {
         anyhow::bail!("wt clean: {failures} worktree(s) failed to clean");
     }
     Ok(())
+}
+
+/// Emit the plan + summary as JSON to stdout.
+///
+/// Schema (see BRW-HFCTL0):
+/// ```json
+/// {
+///   "worktrees": [
+///     { "path": "...", "branch": "feat/x" | null, "classification": "merged",
+///       "action": "clean" | "skip", "reason": "..." }
+///   ],
+///   "summary": {
+///     "total": N,
+///     "to_clean": N,
+///     "skipped": N,
+///     "by_classification": { "merged": N, "not-merged": N, ... },
+///     "failures": N      // present iff cleanup ran and any worktree failed
+///   }
+/// }
+/// ```
+fn emit_json(
+    plan: &[(&WorktreeInfo, Classification)],
+    force: bool,
+    failures: &[(std::path::PathBuf, String)],
+) {
+    use serde_json::json;
+    let failed_paths: std::collections::HashSet<_> =
+        failures.iter().map(|(p, _)| p.clone()).collect();
+
+    let mut by_class: std::collections::BTreeMap<&'static str, u64> = Default::default();
+    let mut to_clean = 0u64;
+    let mut skipped = 0u64;
+
+    let worktrees: Vec<_> = plan
+        .iter()
+        .map(|(wt, c)| {
+            *by_class.entry(c.label()).or_default() += 1;
+            let action = action_for(c, force);
+            if action == "clean" {
+                to_clean += 1;
+            } else {
+                skipped += 1;
+            }
+            let mut entry = json!({
+                "path": wt.path.to_string_lossy(),
+                "branch": wt.branch,
+                "classification": c.label(),
+                "action": action,
+                "reason": reason_for(c),
+            });
+            if failed_paths.contains(&wt.path) {
+                let err = failures
+                    .iter()
+                    .find_map(|(p, e)| (p == &wt.path).then_some(e.as_str()))
+                    .unwrap_or("");
+                entry["failed"] = json!(true);
+                entry["error"] = json!(err);
+            }
+            entry
+        })
+        .collect();
+
+    let mut summary = json!({
+        "total": plan.len() as u64,
+        "to_clean": to_clean,
+        "skipped": skipped,
+        "by_classification": by_class,
+    });
+    if !failures.is_empty() {
+        summary["failures"] = json!(failures.len() as u64);
+    }
+
+    let out = json!({ "worktrees": worktrees, "summary": summary });
+    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+}
+
+fn action_for(c: &Classification, force: bool) -> &'static str {
+    if force {
+        if c.is_forceable() { "clean" } else { "skip" }
+    } else if c.is_safe_to_clean() {
+        "clean"
+    } else {
+        "skip"
+    }
+}
+
+fn reason_for(c: &Classification) -> String {
+    match c {
+        Classification::Primary => "primary worktree".to_string(),
+        Classification::Current => "current worktree".to_string(),
+        Classification::Locked { reason } if reason.is_empty() => "locked".to_string(),
+        Classification::Locked { reason } => format!("locked: {reason}"),
+        Classification::Prunable => "directory missing on disk".to_string(),
+        Classification::Dirty => "uncommitted changes".to_string(),
+        Classification::NotMerged { branch } => {
+            format!("branch {branch} has commits not on target")
+        }
+        Classification::DetachedHead => "detached HEAD".to_string(),
+        Classification::Merged { branch } => format!("branch {branch} merged into target"),
+    }
 }
 
 fn classify(

@@ -14,6 +14,7 @@ pub mod approvals;
 pub mod bare_repository;
 pub mod cache_sharing;
 pub mod ci_status;
+pub mod clean;
 pub mod column_alignment_verification;
 pub mod completion;
 pub mod completion_validation;
