@@ -474,6 +474,33 @@ fn test_merge_config_serde() {
 }
 
 #[test]
+fn test_merge_config_draft_default_false() {
+    // Default draft must be false so auto-opened PRs are immediately mergeable
+    // via GitHub's REST API (drafts return HTTP 405). BRW-MAM60H regression.
+    let config = MergeConfig::default();
+    assert!(!config.draft());
+}
+
+#[test]
+fn test_merge_config_draft_serde_roundtrip() {
+    let config = MergeConfig {
+        draft: Some(true),
+        ..Default::default()
+    };
+    let toml = toml::to_string(&config).unwrap();
+    assert!(toml.contains("draft = true"));
+    let parsed: MergeConfig = toml::from_str(&toml).unwrap();
+    assert!(parsed.draft());
+}
+
+#[test]
+fn test_merge_config_draft_omitted_when_default() {
+    let config = MergeConfig::default();
+    let toml = toml::to_string(&config).unwrap();
+    assert!(!toml.contains("draft"));
+}
+
+#[test]
 fn test_skip_shell_integration_prompt_default_false() {
     let config = UserConfig::default();
     assert!(!config.skip_shell_integration_prompt);

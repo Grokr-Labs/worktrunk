@@ -123,6 +123,12 @@ pub enum ReconcileOutcome {
         closed_pr: Option<u32>,
         new_pr: u32,
     },
+
+    /// `[merge].draft = true`: pushed and opened a draft PR, but skipped the
+    /// auto-merge step because GitHub's merge API rejects drafts (HTTP 405).
+    /// The operator marks the PR ready-for-review and re-runs `wt merge` to
+    /// land it.
+    OpenedDraftPr { pr_number: u32 },
 }
 
 /// Reconcile `origin/<branch>` with local HEAD and push.
@@ -132,14 +138,19 @@ pub enum ReconcileOutcome {
 /// * `target_branch` — the merge target (usually `main`); needed to open a
 ///   replacement PR when restacking.
 /// * `strategy` — what to do when the remote has diverged.
-/// * `auto_open_pr_if_missing` — whether to auto-create a draft PR when the
+/// * `auto_open_pr_if_missing` — whether to auto-create a PR when the
 ///   remote-squash path needs one that doesn't exist.
+/// * `draft` — when `true` AND we auto-create the PR, open it as a draft and
+///   skip the squash-merge step (GitHub rejects merges of drafts with HTTP 405).
+///   Returns [`ReconcileOutcome::OpenedDraftPr`] so the caller can prompt the
+///   operator to mark the PR ready and re-invoke `wt merge`.
 pub fn reconcile_and_push(
     repo: &Repository,
     branch: &str,
     target_branch: &str,
     strategy: RemoteDivergenceStrategy,
     auto_open_pr_if_missing: bool,
+    draft: bool,
 ) -> anyhow::Result<ReconcileOutcome> {
     let state = classify_remote_state(repo, branch)?;
 
@@ -148,7 +159,7 @@ pub fn reconcile_and_push(
     if let RemoteState::Diverges { .. } = state {
         match strategy {
             RemoteDivergenceStrategy::Restack => {
-                return do_restack(repo, branch, target_branch, auto_open_pr_if_missing);
+                return do_restack(repo, branch, target_branch, auto_open_pr_if_missing, draft);
             }
             RemoteDivergenceStrategy::Abort => {
                 return Err(anyhow!(abort_message(branch, target_branch)));
@@ -178,41 +189,64 @@ pub fn reconcile_and_push(
         RemoteState::Diverges { .. } => { /* RemoteSquash: gh owns the collapse */ }
     }
 
-    // Single terminal step shared by every "push-then-merge" outcome. This is
-    // the fix for the P0: previously only Diverges+RemoteSquash reached this,
-    // leaving Absent/InSync/Ahead with a pushed branch but no PR + no merge.
-    let pr_number = finalize_via_github(repo, branch, target_branch, auto_open_pr_if_missing)?;
+    // Single terminal step shared by every "push-then-merge" outcome.
+    match finalize_via_github(repo, branch, target_branch, auto_open_pr_if_missing, draft)? {
+        FinalizeOutcome::Merged(pr_number) => Ok(match state {
+            RemoteState::Absent => ReconcileOutcome::FirstPush { pr_number },
+            RemoteState::InSync => ReconcileOutcome::AlreadyPushed { pr_number },
+            RemoteState::Ahead => ReconcileOutcome::RebasedAndPushed { pr_number },
+            RemoteState::Diverges { .. } => ReconcileOutcome::RemoteSquashed { pr_number },
+        }),
+        FinalizeOutcome::OpenedDraft(pr_number) => {
+            Ok(ReconcileOutcome::OpenedDraftPr { pr_number })
+        }
+    }
+}
 
-    Ok(match state {
-        RemoteState::Absent => ReconcileOutcome::FirstPush { pr_number },
-        RemoteState::InSync => ReconcileOutcome::AlreadyPushed { pr_number },
-        RemoteState::Ahead => ReconcileOutcome::RebasedAndPushed { pr_number },
-        RemoteState::Diverges { .. } => ReconcileOutcome::RemoteSquashed { pr_number },
-    })
+/// Internal terminal-step outcome bridging [`finalize_via_github`] and
+/// [`reconcile_and_push`]: a draft auto-open is a successful no-merge exit, not
+/// an error, but it's not the same shape as the merged outcome either.
+enum FinalizeOutcome {
+    /// PR exists and was squash-merged via the API.
+    Merged(u32),
+    /// PR was newly auto-created as a draft; merge was skipped intentionally.
+    OpenedDraft(u32),
 }
 
 /// Open (or find) a PR for `branch` targeting `target_branch`, squash-merge it
 /// via GitHub, delete the remote feature branch, then fetch the new
 /// `target_branch` tip locally. Shared terminal for every "the feature is now
 /// on origin, land it" outcome.
+///
+/// When `draft` is true AND we auto-create the PR, the PR is opened as a draft
+/// and the merge step is skipped — GitHub's merge API refuses drafts with
+/// HTTP 405 (BRW-MAM60H). Returns [`FinalizeOutcome::OpenedDraft`] so the caller
+/// can stop cleanly and prompt the operator to mark the PR ready.
 fn finalize_via_github(
     repo: &Repository,
     branch: &str,
     target_branch: &str,
     auto_open_pr_if_missing: bool,
-) -> anyhow::Result<u32> {
-    let pr_number = match find_open_pr(repo, branch)? {
-        Some(n) => n,
-        None if auto_open_pr_if_missing => open_draft_pr(repo, branch, target_branch)?,
+    draft: bool,
+) -> anyhow::Result<FinalizeOutcome> {
+    let (pr_number, just_opened_draft) = match find_open_pr(repo, branch)? {
+        Some(n) => (n, false),
+        None if auto_open_pr_if_missing => (open_pr(repo, branch, target_branch, draft)?, draft),
         None => {
             return Err(anyhow!(
                 "wt merge expected an open PR for branch '{branch}' targeting '{target_branch}', \
 and `auto_open_pr_if_missing` is disabled. Either open one manually \
-(`gh pr create --draft --head {branch} --base {target_branch}`) or set \
+(`gh pr create --head {branch} --base {target_branch}`) or set \
 `[merge] auto_open_pr_if_missing = true` in wt config."
             ));
         }
     };
+
+    if just_opened_draft {
+        // Draft PRs can't be merged via the API (HTTP 405). Stop cleanly and
+        // let the operator mark the PR ready, then re-invoke `wt merge`.
+        return Ok(FinalizeOutcome::OpenedDraft(pr_number));
+    }
 
     squash_merge_pr_via_api(repo, pr_number, branch)
         .context("squash-merge via GitHub REST API failed")?;
@@ -233,7 +267,7 @@ and `auto_open_pr_if_missing` is disabled. Either open one manually \
     .with_context(|| {
         format!("failed to advance local {target_branch} to origin/{target_branch}")
     })?;
-    Ok(pr_number)
+    Ok(FinalizeOutcome::Merged(pr_number))
 }
 
 /// Squash-merge an open PR and delete its remote head branch via `gh api` REST
@@ -293,11 +327,16 @@ fn branch_ref_api_path(branch: &str) -> String {
 /// finalize the cycle by squash-merging the new PR. The `_auto_open_pr_if_missing`
 /// argument is accepted for signature parity with the terminal step; restack
 /// always opens its replacement PR explicitly.
+///
+/// When `draft` is true the replacement PR is opened as a draft and the merge
+/// step is skipped (drafts return HTTP 405 from the merge API, BRW-MAM60H);
+/// returns [`ReconcileOutcome::OpenedDraftPr`] so the caller stops cleanly.
 fn do_restack(
     repo: &Repository,
     branch: &str,
     target_branch: &str,
     _auto_open_pr_if_missing: bool,
+    draft: bool,
 ) -> anyhow::Result<ReconcileOutcome> {
     let new_branch = next_vn_name(repo, branch)?;
 
@@ -321,25 +360,31 @@ collision. Tree unchanged; recreated on `{new_branch}` with a single squash comm
 
     let title = commit_subject(repo, "HEAD")?;
     let body = supersession_body(branch, closed_pr);
-    let pr_url = gh(
-        repo,
-        &[
-            "pr",
-            "create",
-            "--base",
-            target_branch,
-            "--head",
-            &new_branch,
-            "--title",
-            &title,
-            "--body",
-            &body,
-        ],
-    )
-    .context("failed to create replacement PR")?;
+    let mut create_args = vec!["pr", "create"];
+    if draft {
+        create_args.push("--draft");
+    }
+    create_args.extend_from_slice(&[
+        "--base",
+        target_branch,
+        "--head",
+        &new_branch,
+        "--title",
+        &title,
+        "--body",
+        &body,
+    ]);
+    let pr_url = gh(repo, &create_args).context("failed to create replacement PR")?;
 
     let new_pr = parse_pr_number_from_url(&pr_url)
         .with_context(|| format!("failed to parse PR number from gh output: {pr_url:?}"))?;
+
+    if draft {
+        // Drafts can't be merged via the API. Stop cleanly; operator marks the
+        // replacement PR ready and re-runs `wt merge`. Supersession comment on
+        // the closed PR is the audit trail for the restack itself.
+        return Ok(ReconcileOutcome::OpenedDraftPr { pr_number: new_pr });
+    }
 
     // Squash-merge the replacement PR and fetch the new target so `wt merge`
     // completes the full cycle rather than leaving a PR open for human
@@ -405,29 +450,37 @@ fn find_open_pr(repo: &Repository, branch: &str) -> anyhow::Result<Option<u32>> 
     }
 }
 
-fn open_draft_pr(repo: &Repository, branch: &str, target_branch: &str) -> anyhow::Result<u32> {
+/// Open a PR for `branch` targeting `target_branch`. When `draft` is true the
+/// PR is created in draft state; otherwise it's opened ready-for-review so the
+/// caller's immediate squash-merge step succeeds (BRW-MAM60H — drafts return
+/// HTTP 405 from the merge API).
+fn open_pr(
+    repo: &Repository,
+    branch: &str,
+    target_branch: &str,
+    draft: bool,
+) -> anyhow::Result<u32> {
     let title = commit_subject(repo, "HEAD")?;
     let body = format!(
         "Auto-opened by `wt merge` for remote-squash reconciliation. Feature branch `{branch}` \
 has pre-squash commits on origin; server-side squash-merge will collapse them into one commit \
 on `{target_branch}`."
     );
-    let out = gh(
-        repo,
-        &[
-            "pr",
-            "create",
-            "--draft",
-            "--base",
-            target_branch,
-            "--head",
-            branch,
-            "--title",
-            &title,
-            "--body",
-            &body,
-        ],
-    )?;
+    let mut args = vec!["pr", "create"];
+    if draft {
+        args.push("--draft");
+    }
+    args.extend_from_slice(&[
+        "--base",
+        target_branch,
+        "--head",
+        branch,
+        "--title",
+        &title,
+        "--body",
+        &body,
+    ]);
+    let out = gh(repo, &args)?;
     parse_pr_number_from_url(&out)
         .with_context(|| format!("failed to parse PR number from gh output: {out:?}"))
 }
