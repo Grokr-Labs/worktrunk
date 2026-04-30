@@ -344,11 +344,19 @@ pub struct MergeConfig {
     pub on_diverged_remote: Option<RemoteDivergenceStrategy>,
 
     /// When `push_to_origin = true` and remote-squash requires an open PR
-    /// that doesn't exist, auto-open a draft PR targeting the merge target
+    /// that doesn't exist, auto-open a PR targeting the merge target
     /// (default: true). Setting false causes the merge to abort with a clear
     /// error telling the operator to open the PR first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_open_pr_if_missing: Option<bool>,
+
+    /// Open auto-created PRs as drafts (default: false). When false, wt opens
+    /// the PR ready-for-review and the immediate squash-merge step succeeds in
+    /// one shot. When true, wt opens the PR as a draft and stops cleanly —
+    /// GitHub's merge API rejects drafts (HTTP 405), so the operator marks it
+    /// ready and re-runs `wt merge` (which finds the existing PR and merges).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft: Option<bool>,
 }
 
 impl MergeConfig {
@@ -403,9 +411,18 @@ impl MergeConfig {
         self.on_diverged_remote.unwrap_or_default()
     }
 
-    /// Whether to auto-open a draft PR when remote-squash needs one (default: true).
+    /// Whether to auto-open a PR when remote-squash needs one (default: true).
     pub fn auto_open_pr_if_missing(&self) -> bool {
         self.auto_open_pr_if_missing.unwrap_or(true)
+    }
+
+    /// Whether auto-opened PRs should be drafts (default: false).
+    ///
+    /// `false` is the only setting that completes the merge cycle in one
+    /// invocation: GitHub's merge API refuses drafts with HTTP 405, so the
+    /// auto-merge step would otherwise fail and require operator intervention.
+    pub fn draft(&self) -> bool {
+        self.draft.unwrap_or(false)
     }
 }
 
@@ -423,6 +440,7 @@ impl Merge for MergeConfig {
             auto_open_pr_if_missing: other
                 .auto_open_pr_if_missing
                 .or(self.auto_open_pr_if_missing),
+            draft: other.draft.or(self.draft),
         }
     }
 }

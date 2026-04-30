@@ -250,11 +250,21 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
             &target_branch,
             resolved.merge.on_diverged_remote(),
             resolved.merge.auto_open_pr_if_missing(),
+            resolved.merge.draft(),
         )?;
         eprintln!(
             "{}",
             info_message(format!("Remote reconciliation: {outcome:?}"))
         );
+        if let crate::commands::worktree::ReconcileOutcome::OpenedDraftPr { pr_number } = &outcome {
+            eprintln!(
+                "{}",
+                info_message(format!(
+                    "Opened draft PR #{pr_number}; merge skipped. Mark it ready for review then re-run `wt merge` to land it."
+                ))
+            );
+            return Ok(());
+        }
         eprintln!(
             "{}",
             info_message("GitHub completed the squash-merge; skipping local merge phase.")
@@ -264,7 +274,6 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
         // the local handle_push step (which would try to re-push the same
         // content wt just pushed + merged) and leaves worktree cleanup,
         // PR close, and post-merge hooks to the caller's next pipeline.
-        let _ = outcome;
         return Ok(());
     }
 
