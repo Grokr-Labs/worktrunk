@@ -1124,6 +1124,7 @@ fn handle_clean_command(args: CleanArgs) -> anyhow::Result<()> {
         yes: args.yes,
         dry_run: args.dry_run,
         force: args.force,
+        json: args.format == SwitchFormat::Json,
     })
 }
 

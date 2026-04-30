@@ -52,6 +52,8 @@ const STDOUT_ALLOWED_PATHS: &[&str] = &[
     "for_each.rs",
     // JSON output for wt merge --format=json
     "merge.rs",
+    // JSON output for wt clean --format=json (BRW-HFCTL0)
+    "clean.rs",
     // Hook listing output for wt hook show (paged)
     "hook_commands.rs",
 ];
