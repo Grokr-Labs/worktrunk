@@ -269,6 +269,9 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
             "{}",
             info_message("GitHub completed the squash-merge; skipping local merge phase.")
         );
+        if let Some(pr_number) = squash_pr_number(&outcome) {
+            emit_post_merge_summary(repo, &target_branch, pr_number);
+        }
         // Intentional: we skip the rest of handle_merge because the
         // target branch is already updated on origin. Short-circuit avoids
         // the local handle_push step (which would try to re-push the same
@@ -433,4 +436,73 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Extract the squashed PR number from a successful `ReconcileOutcome`
+/// (BRW-2GX4LP). Returns `None` for the draft-PR variant since no merge happened.
+fn squash_pr_number(outcome: &super::worktree::ReconcileOutcome) -> Option<u32> {
+    use super::worktree::ReconcileOutcome::*;
+    match outcome {
+        FirstPush { pr_number }
+        | AlreadyPushed { pr_number }
+        | RebasedAndPushed { pr_number }
+        | RemoteSquashed { pr_number } => Some(*pr_number),
+        Restacked { new_pr, .. } => Some(*new_pr),
+        OpenedDraftPr { .. } => None,
+    }
+}
+
+/// Emit a post-merge summary line showing the new target HEAD sha and the PR
+/// URL that produced the squash commit (BRW-2GX4LP). Both lookups fail-safe:
+/// if the sha can't be resolved we omit it, and if the PR URL can't be fetched
+/// we fall back to just the PR number. Network failure shouldn't fail the
+/// merge — the merge has already landed.
+fn emit_post_merge_summary(repo: &Repository, target_branch: &str, pr_number: u32) {
+    let sha = repo
+        .run_command(&[
+            "rev-parse",
+            "--short",
+            &format!("refs/heads/{target_branch}"),
+        ])
+        .ok()
+        .map(|s| s.trim().to_string());
+
+    let pr_url = pr_view_url(repo, pr_number);
+
+    let pr_part = match pr_url.as_deref() {
+        Some(url) => format!("PR #{pr_number} — {url}"),
+        None => format!("PR #{pr_number}"),
+    };
+    let line = match sha {
+        Some(sha) => format!("{target_branch} advanced to {sha} ({pr_part})"),
+        None => format!("{target_branch} advanced ({pr_part})"),
+    };
+    eprintln!("{}", info_message(line));
+}
+
+/// Look up the PR's HTML URL via `gh pr view <num> --json url --jq .url`.
+/// Returns `None` if `gh` isn't available, the PR isn't reachable, or the
+/// output is empty. Used only for display; never fails the merge.
+fn pr_view_url(repo: &Repository, pr_number: u32) -> Option<String> {
+    use worktrunk::shell_exec::Cmd;
+    let cwd = repo.current_worktree().root().ok()?;
+    let output = Cmd::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "url",
+            "--jq",
+            ".url",
+        ])
+        .current_dir(cwd)
+        .external("merge-summary:gh")
+        .run()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if url.is_empty() { None } else { Some(url) }
 }
