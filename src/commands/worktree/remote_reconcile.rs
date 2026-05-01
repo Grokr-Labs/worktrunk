@@ -10,7 +10,7 @@
 //!
 //! This module models the four possible remote-state outcomes and dispatches
 //! to a configured reconciliation strategy. See
-//! [`super::super::super::config::user::sections::RemoteDivergenceStrategy`]
+//! [`worktrunk::config::RemoteDivergenceStrategy`]
 //! for the user-facing explanation.
 //!
 //! ## Module placement

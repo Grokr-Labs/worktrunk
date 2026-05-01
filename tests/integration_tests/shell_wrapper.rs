@@ -419,6 +419,14 @@ fn exec_in_pty_interactive(
             cmd.arg(script);
         }
         "bash" => {
+            // Isolate from user/system rc files to mirror the zsh case above
+            // (--no-rcs + NO_GLOBAL_RCS + ZDOTDIR=/dev/null). Without --norc /
+            // --noprofile, bash interactively sources /etc/bashrc and ~/.bashrc,
+            // which on Nix-managed machines REPLACES PATH from scratch — wiping
+            // ~/.cargo/bin and breaking the `wt --source` path which calls
+            // `cargo run` (BRW-919LQI).
+            cmd.arg("--norc");
+            cmd.arg("--noprofile");
             cmd.arg("-i");
             cmd.arg("-c");
             cmd.arg(script);
