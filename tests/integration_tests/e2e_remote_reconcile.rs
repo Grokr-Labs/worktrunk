@@ -105,6 +105,33 @@ fn assert_outcome_contains(combined: &str, needle: &str) {
     );
 }
 
+/// BRW-J59NF4: after `wt merge` squash-finalizes via GitHub, the main
+/// worktree's index + working tree must match HEAD. `git update-ref` alone
+/// only moves the branch pointer; without an explicit resync the merged
+/// files show up as "modified" in `git status` and any tooling that reads
+/// the working tree (e.g. `cargo install --path .`) silently uses stale code.
+fn assert_main_worktree_clean_after_merge(sandbox: &SandboxRepo) {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&sandbox.clone_path)
+        .output()
+        .expect("git status");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let dirty: Vec<_> = stdout
+        .lines()
+        // The .worktrees/ dir is intentionally untracked (per repo .gitignore
+        // in real fleets); accept any "??" entries pointing at it. All other
+        // status lines indicate the BRW-J59NF4 stale-state bug.
+        .filter(|l| !l.is_empty() && !l.starts_with("?? .worktrees/"))
+        .collect();
+    assert!(
+        dirty.is_empty(),
+        "main worktree should be clean after squash-finalize (BRW-J59NF4); \
+         got:\n{}",
+        dirty.join("\n"),
+    );
+}
+
 // ============================================================================
 // 1. Absent — fresh feature branch, never pushed → FirstPush
 // ============================================================================
@@ -122,6 +149,7 @@ fn e2e_remote_reconcile_absent_first_push() {
     let (out, code) = run_wt_merge(&sandbox, &env, &wt_path);
     assert_eq!(code, 0, "wt merge expected to succeed; got:\n{out}");
     assert_outcome_contains(&out, "FirstPush");
+    assert_main_worktree_clean_after_merge(&sandbox);
 
     // Feature branch deleted on origin (gh api returns 404 once it's gone).
     let raw = Command::new("gh")
@@ -161,6 +189,7 @@ fn e2e_remote_reconcile_in_sync_already_pushed() {
     let (out, code) = run_wt_merge(&sandbox, &env, &wt_path);
     assert_eq!(code, 0, "wt merge expected to succeed; got:\n{out}");
     assert_outcome_contains(&out, "AlreadyPushed");
+    assert_main_worktree_clean_after_merge(&sandbox);
 }
 
 // ============================================================================
@@ -216,6 +245,7 @@ fn e2e_remote_reconcile_ahead_rebased_and_pushed() {
     let (out, code) = run_wt_merge(&sandbox, &env, &wt_path);
     assert_eq!(code, 0, "wt merge expected to succeed; got:\n{out}");
     assert_outcome_contains(&out, "RebasedAndPushed");
+    assert_main_worktree_clean_after_merge(&sandbox);
 }
 
 // ============================================================================
@@ -252,6 +282,7 @@ fn e2e_remote_reconcile_diverges_remote_squash() {
     let (out, code) = run_wt_merge(&sandbox, &env, &wt_path);
     assert_eq!(code, 0, "wt merge expected to succeed; got:\n{out}");
     assert_outcome_contains(&out, "RemoteSquashed");
+    assert_main_worktree_clean_after_merge(&sandbox);
 }
 
 // ============================================================================
@@ -305,6 +336,7 @@ fn e2e_remote_reconcile_diverges_restack() {
     assert_eq!(code, 0, "wt merge expected to succeed; got:\n{out}");
     assert_outcome_contains(&out, "Restacked");
     assert_outcome_contains(&out, "v2");
+    assert_main_worktree_clean_after_merge(&sandbox);
 }
 
 // ============================================================================

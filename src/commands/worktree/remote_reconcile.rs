@@ -267,7 +267,41 @@ and `auto_open_pr_if_missing` is disabled. Either open one manually \
     .with_context(|| {
         format!("failed to advance local {target_branch} to origin/{target_branch}")
     })?;
+    resync_target_worktree(repo, target_branch)?;
     Ok(FinalizeOutcome::Merged(pr_number))
+}
+
+/// Refresh the index + working tree of the worktree holding `target_branch`
+/// so they match the freshly-advanced HEAD (BRW-J59NF4).
+///
+/// `git update-ref` moves the branch pointer but does not touch the index or
+/// working tree. If the target branch is checked out (the typical case — the
+/// main worktree holds `main`), its HEAD now points to the new squash commit
+/// but its index records the OLD tree and its working tree files are at the
+/// OLD content. `git status` reports every merged file as modified, and any
+/// post-merge tooling that reads the working tree (e.g. `cargo install --path .`)
+/// silently uses stale code.
+///
+/// Uses `git reset --keep` so we fail rather than discard if the user has
+/// local modifications to tracked files between the pre-merge clean-tree
+/// check and finalize (data-safety contract per CLAUDE.md). When the target
+/// branch isn't checked out anywhere (rare; bare repos without a default-branch
+/// worktree, or unusual setups), this is a no-op.
+fn resync_target_worktree(repo: &Repository, target_branch: &str) -> anyhow::Result<()> {
+    let Some(target_path) = repo.worktree_for_branch(target_branch)? else {
+        return Ok(());
+    };
+    repo.worktree_at(&target_path)
+        .run_command(&["reset", "--keep", &format!("refs/heads/{target_branch}")])
+        .with_context(|| {
+            format!(
+                "failed to refresh {target_branch} worktree at {} after squash-finalize; \
+                 if it has local modifications to tracked files, stash or commit them \
+                 and run `git reset --keep refs/heads/{target_branch}` manually",
+                target_path.display(),
+            )
+        })?;
+    Ok(())
 }
 
 /// Squash-merge an open PR and delete its remote head branch via `gh api` REST
@@ -403,6 +437,7 @@ collision. Tree unchanged; recreated on `{new_branch}` with a single squash comm
     .with_context(|| {
         format!("failed to advance local {target_branch} to origin/{target_branch}")
     })?;
+    resync_target_worktree(repo, target_branch)?;
 
     Ok(ReconcileOutcome::Restacked {
         new_branch,
