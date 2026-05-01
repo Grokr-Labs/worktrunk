@@ -117,6 +117,36 @@ pub(crate) fn should_show_explicit_path_hint() -> bool {
             .unwrap_or(false)
 }
 
+/// Whether to suppress all shell-integration warnings/hints.
+///
+/// True when there is no human reading stderr or we're inside a wt hook chain:
+///
+/// - **Non-TTY stderr** (Claude Code Bash tool, CI, scripts): no terminal
+///   to act on the hint, so the warning is noise.
+/// - **`WT_HOOK_CONTEXT` set**: a parent `wt` invocation set this env var on
+///   every subprocess spawn; the parent already decided whether to warn, and
+///   nested warnings during hook execution are duplicate noise.
+///
+/// Test override: `WORKTRUNK_TEST_ASSUME_TTY=1` forces the "TTY" branch so
+/// existing snapshot tests that exercise the warning path keep working under
+/// `cargo test` (which pipes stderr). The test fixture sets this by default;
+/// tests that want to verify the suppressed (non-TTY) path unset it.
+///
+/// Used by both [`compute_shell_warning_reason`] (cd warnings) and the
+/// `wt config show` shell-status section.
+pub fn should_suppress_shell_warnings() -> bool {
+    let stderr_is_tty = match std::env::var("WORKTRUNK_TEST_ASSUME_TTY").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => std::io::stderr().is_terminal(),
+    };
+    should_suppress_shell_warnings_inner(stderr_is_tty, std::env::var("WT_HOOK_CONTEXT").is_ok())
+}
+
+fn should_suppress_shell_warnings_inner(stderr_is_tty: bool, in_hook: bool) -> bool {
+    !stderr_is_tty || in_hook
+}
+
 /// Compute the shell warning reason for display in messages.
 ///
 /// Returns a reason string explaining why shell integration isn't working.
@@ -620,6 +650,21 @@ mod tests {
             reason.contains("WT.EXE") || reason.contains(".exe"),
             "{reason}"
         );
+    }
+
+    #[test]
+    fn test_should_suppress_shell_warnings_inner() {
+        // TTY + no hook -> show warnings (a human is reading)
+        assert!(!should_suppress_shell_warnings_inner(true, false));
+
+        // Non-TTY -> suppress (script, CI, agent's Bash tool)
+        assert!(should_suppress_shell_warnings_inner(false, false));
+
+        // Inside hook chain -> suppress (parent already decided)
+        assert!(should_suppress_shell_warnings_inner(true, true));
+
+        // Both -> suppress
+        assert!(should_suppress_shell_warnings_inner(false, true));
     }
 
     #[test]

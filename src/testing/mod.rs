@@ -388,6 +388,11 @@ pub fn configure_cli_command(cmd: &mut Command) {
     cmd.env("WORKTRUNK_TEST_POWERSHELL_ENV", "0");
     // Disable auto nushell detection (tests that need it should set to "1")
     cmd.env("WORKTRUNK_TEST_NUSHELL_ENV", "0");
+    // Force shell-integration warnings to fire as if stderr were a TTY. Under
+    // `cargo test` stderr is piped, which would otherwise trigger BRW-A0MWUI's
+    // non-TTY suppression and erase the warnings these tests verify. Tests that
+    // exercise the suppressed path explicitly set this to "0".
+    cmd.env("WORKTRUNK_TEST_ASSUME_TTY", "1");
     cmd.env("WORKTRUNK_TEST_EPOCH", TEST_EPOCH.to_string());
     // Enable warn-level logging so diagnostics show up in test failures
     cmd.env("RUST_LOG", "warn");

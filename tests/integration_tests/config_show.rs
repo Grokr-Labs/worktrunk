@@ -3761,3 +3761,37 @@ fn test_config_show_json_outside_repo(repo: TestRepo, temp_home: TempDir) {
     assert!(!json["project"]["exists"].as_bool().unwrap());
     assert!(json["project"]["config"].is_null());
 }
+
+/// BRW-A0MWUI: when stderr is non-TTY (script/CI/agent Bash) the SHELL INTEGRATION
+/// section reports status as a neutral info line, not a warning, and skips the
+/// "Invoked as / $SHELL / Running from" diagnostic block.
+#[rstest]
+fn test_config_show_suppresses_shell_warning_when_non_tty(mut repo: TestRepo, temp_home: TempDir) {
+    repo.setup_mock_ci_tools_unauthenticated();
+
+    let mut cmd = wt_command();
+    repo.configure_wt_cmd(&mut cmd);
+    repo.configure_mock_commands(&mut cmd);
+    cmd.arg("config").arg("show").current_dir(repo.root_path());
+    set_temp_home_env(&mut cmd, temp_home.path());
+    set_xdg_config_path(&mut cmd, temp_home.path());
+    // Override the test fixture default (=1) to exercise the non-TTY suppression path.
+    cmd.env("WORKTRUNK_TEST_ASSUME_TTY", "0");
+
+    let output = cmd.output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Suppressed: neutral info marker, no warning glyph, no diagnostic block.
+    assert!(
+        stdout.contains("Shell integration not active"),
+        "expected status line, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("\u{25b2}"),
+        "expected no warning triangle, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Invoked as:"),
+        "expected no diagnostic block, got:\n{stdout}"
+    );
+}

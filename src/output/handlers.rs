@@ -245,7 +245,13 @@ fn build_switch_output_context(
 
     let is_git_subcommand = crate::is_git_subcommand();
     let is_shell_integration_active = super::is_shell_integration_active();
-    let shell_warning_reason = if !change_dir || is_shell_integration_active {
+    let shell_warning_reason = if !change_dir
+        || is_shell_integration_active
+        || super::shell_integration::should_suppress_shell_warnings()
+    {
+        // Suppress when: no cd was attempted, shell integration is active,
+        // or we're in a non-TTY/hook context where no human can act on the
+        // warning (BRW-A0MWUI).
         None
     } else if is_git_subcommand {
         Some("ran git wt; running through git prevents cd".to_string())
@@ -542,6 +548,9 @@ fn print_switch_message_if_changed(
                 "Switched to worktree for <bold>{dest_branch}</> @ <bold>{path_display}</>"
             ))
         );
+    } else if super::shell_integration::should_suppress_shell_warnings() {
+        // Non-TTY (script/CI/agent Bash) or inside a hook chain: nothing to
+        // act on, so skip the cd warning entirely (BRW-A0MWUI).
     } else if crate::is_git_subcommand() {
         // Running as `git wt` - explain why cd can't work
         eprintln!(
