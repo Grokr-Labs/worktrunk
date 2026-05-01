@@ -703,6 +703,11 @@ fn render_shell_status(out: &mut String) -> anyhow::Result<()> {
     let shell_active = output::is_shell_integration_active();
     if shell_active {
         writeln!(out, "{}", info_message("Shell integration active"))?;
+    } else if crate::output::shell_integration::should_suppress_shell_warnings() {
+        // Non-TTY (script/CI/agent Bash) or inside a hook chain: report status
+        // as neutral info, skip the diagnostic block — there's no human to act
+        // on the hint and no shell to wrap. (BRW-A0MWUI)
+        writeln!(out, "{}", info_message("Shell integration not active"))?;
     } else {
         writeln!(out, "{}", warning_message("Shell integration not active"))?;
         // Show invocation details to help diagnose
