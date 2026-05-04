@@ -255,46 +255,31 @@ and `auto_open_pr_if_missing` is disabled. Either open one manually \
     Ok(FinalizeOutcome::Merged(pr_number))
 }
 
-/// Advance the local `target_branch` ref to `origin/<target_branch>` after
-/// GitHub squash-finalized the PR, syncing the target worktree atomically.
+/// Advance the local `target_branch` ref to `origin/<target_branch>`,
+/// syncing the worktree that holds it.
 ///
-/// Implementation note (BRW-VIRJDD): `git reset --keep <new-sha>` is invoked
-/// IN the worktree holding `target_branch` (when one exists). The reset moves
-/// `refs/heads/<target_branch>` (since HEAD is a symbolic ref to it) AND
-/// updates the index AND syncs the working tree atomically — all in one
-/// HEAD-from-OLD-to-NEW transition where reset's working-tree updates fire
-/// correctly.
+/// `git reset --keep` must run IN the target's worktree: the reset moves the
+/// branch ref AND updates the index AND syncs the working tree in one
+/// HEAD-from-OLD-to-NEW transition. Splitting "move ref" from "sync worktree"
+/// (e.g. `update-ref` followed by `reset --keep` from the same worktree) makes
+/// the reset a no-op for working-tree updates because HEAD already equals the
+/// target by the time it runs.
 ///
-/// The earlier two-step `git update-ref` then `git reset --keep` was buggy
-/// for the deletion case: `update-ref` moved the branch out from under HEAD,
-/// so by the time the reset ran HEAD already equalled the target. Reset then
-/// updated the index but skipped working-tree updates, leaving deleted files
-/// behind as untracked detritus.
-///
-/// `--keep` keeps data-safety: if the worktree has uncommitted modifications
-/// to tracked files, the reset aborts rather than discarding them. The
-/// pre-merge flow guarantees a clean working tree at finalize time, but the
-/// safety check defends against time-of-check-vs-time-of-use slips.
-///
-/// When no worktree holds `target_branch` (rare; bare repos without a
-/// default-branch worktree, or unusual setups), fall back to plain
-/// `update-ref` because there's no working tree to sync.
+/// `--keep` aborts on uncommitted modifications to tracked files rather than
+/// discarding them. The fallback `update-ref` runs only when no worktree holds
+/// the branch (rare; bare repos with no default-branch worktree).
 fn advance_target_branch(repo: &Repository, target_branch: &str) -> anyhow::Result<()> {
     repo.run_command(&["fetch", "origin", target_branch])?;
-    let new_sha = repo
-        .run_command(&["rev-parse", &format!("refs/remotes/origin/{target_branch}")])
-        .with_context(|| format!("failed to read origin/{target_branch} after fetch"))?
-        .trim()
-        .to_string();
+    let new_ref = format!("refs/remotes/origin/{target_branch}");
 
     if let Some(target_path) = repo.worktree_for_branch(target_branch)? {
         repo.worktree_at(&target_path)
-            .run_command(&["reset", "--keep", &new_sha])
+            .run_command(&["reset", "--keep", &new_ref])
             .with_context(|| {
                 format!(
-                    "failed to advance {target_branch} worktree at {} to {new_sha}; \
+                    "failed to advance {target_branch} worktree at {} to origin/{target_branch}; \
                      if it has local modifications to tracked files, stash or commit them \
-                     and run `git reset --keep {new_sha}` manually",
+                     and run `git reset --keep origin/{target_branch}` manually",
                     target_path.display(),
                 )
             })?;
@@ -302,9 +287,11 @@ fn advance_target_branch(repo: &Repository, target_branch: &str) -> anyhow::Resu
         repo.run_command(&[
             "update-ref",
             &format!("refs/heads/{target_branch}"),
-            &new_sha,
+            &new_ref,
         ])
-        .with_context(|| format!("failed to advance local {target_branch} to {new_sha}"))?;
+        .with_context(|| {
+            format!("failed to advance local {target_branch} to origin/{target_branch}")
+        })?;
     }
     Ok(())
 }
@@ -431,8 +418,6 @@ collision. Tree unchanged; recreated on `{new_branch}` with a single squash comm
     // failure `gh pr merge` hits in multi-worktree setups.
     squash_merge_pr_via_api(repo, new_pr, &new_branch)
         .context("failed to squash-merge replacement PR")?;
-    // Advance the local `target_branch` ref + sync the target worktree.
-    // See `advance_target_branch` for the reset-only design (BRW-VIRJDD).
     advance_target_branch(repo, target_branch)?;
 
     Ok(ReconcileOutcome::Restacked {
