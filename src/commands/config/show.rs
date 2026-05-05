@@ -331,6 +331,17 @@ fn render_runtime_info(out: &mut String) -> anyhow::Result<()> {
         "{}",
         info_message(cformat!("{cmd}: <bold>{version}</>"))
     )?;
+    // Resolved binary path. The shell wrapper function masks the binary in
+    // `which wt` / `command -v wt`, so this is the canonical "which wt
+    // binary will run?" answer (BRW-6RRNTT).
+    if let Ok(exe_path) = std::env::current_exe() {
+        let exe_display = format_path_for_display(&exe_path);
+        writeln!(
+            out,
+            "{}",
+            info_message(cformat!("{cmd} binary: <bold>{exe_display}</>"))
+        )?;
+    }
     if let Some(git_version) = git_version() {
         writeln!(
             out,
