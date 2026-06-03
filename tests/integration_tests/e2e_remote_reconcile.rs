@@ -421,7 +421,8 @@ fn e2e_reconcile_runs_post_merge_hooks_and_cleanup() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    assert_outcome_contains(&combined, "RemoteSquashed");
+    // A fresh single-commit branch is a FirstPush (no local squash, no divergence).
+    assert_outcome_contains(&combined, "FirstPush");
     assert!(
         sentinel.exists(),
         "post-merge hook did not run after reconcile merge (BRW-XZZCYC); output:\n{combined}"
@@ -431,4 +432,46 @@ fn e2e_reconcile_runs_post_merge_hooks_and_cleanup() {
         "feature worktree was not cleaned up after reconcile merge (BRW-XZZCYC); output:\n{combined}"
     );
     assert_main_worktree_clean_after_merge(&sandbox);
+}
+
+// ============================================================================
+// BRW-GMDDRC: a commit added AFTER the PR was pushed must be preserved. With no
+// local squash, this is a clean fast-forward (LocalAhead → FastForwardPushed),
+// the late commit is pushed, and the provider squashes the COMPLETE set — no
+// silent drop, no commit-loss guard needed.
+// ============================================================================
+#[test]
+#[ignore = "requires gh auth + creates a real GitHub repo; run via `cargo test -- --ignored`"]
+fn e2e_reconcile_local_ahead_preserves_late_commit() {
+    require_gh_auth();
+    let sandbox = SandboxRepo::new();
+    let env = E2eEnv::new(&sandbox, "remote-squash");
+
+    let wt_path = make_feature_worktree(&sandbox, "feat/late-commit");
+    commit_in(&wt_path, "a.txt", "a\n", "feat: a");
+    // Push the branch (PR exists)…
+    Command::new("git")
+        .args(["push", "--quiet", "-u", "origin", "feat/late-commit"])
+        .current_dir(&wt_path)
+        .status()
+        .unwrap();
+    // …then add a SECOND commit after the push (the dropped-commit scenario).
+    commit_in(&wt_path, "b.txt", "b-late\n", "feat: b late");
+
+    let (out, code) = run_wt_merge(&sandbox, &env, &wt_path);
+    assert_eq!(code, 0, "wt merge expected to succeed; got:\n{out}");
+    // Clean fast-forward, NOT a stale remote-squash of the pre-push PR branch.
+    assert_outcome_contains(&out, "FastForwardPushed");
+    assert_main_worktree_clean_after_merge(&sandbox);
+
+    // The late commit's content must be on main (it was NOT dropped).
+    let main_b = Command::new("git")
+        .args(["show", "main:b.txt"])
+        .current_dir(&sandbox.clone_path)
+        .output()
+        .expect("git show main:b.txt");
+    assert!(
+        main_b.status.success() && String::from_utf8_lossy(&main_b.stdout).contains("b-late"),
+        "late commit b.txt was dropped from main; wt merge output:\n{out}"
+    );
 }
