@@ -374,3 +374,61 @@ fn e2e_remote_reconcile_diverges_abort() {
     assert_outcome_contains(&out, "remote-squash");
     assert_outcome_contains(&out, "restack");
 }
+
+// ============================================================================
+// BRW-XZZCYC: the reconcile path must run the post-reconcile pipeline (cleanup
+// + post-merge hooks), not short-circuit past it. Before the fix, a
+// push_to_origin merge returned early after the provider squash-merge, so the
+// feature worktree was never removed and [[post-merge]] hooks (e.g. deploy)
+// never ran. This drives a real reconcile merge with a project post-merge hook
+// and asserts both the sentinel and the worktree cleanup.
+// ============================================================================
+#[test]
+#[ignore = "requires gh auth + creates a real GitHub repo; run via `cargo test -- --ignored`"]
+fn e2e_reconcile_runs_post_merge_hooks_and_cleanup() {
+    require_gh_auth();
+    let _ = wt_bin();
+
+    let sandbox = SandboxRepo::new();
+    let env = E2eEnv::new(&sandbox, "remote-squash");
+
+    // Project config: a post-merge hook that drops a sentinel (absolute path so
+    // the destination-worktree cwd is irrelevant).
+    let sentinel = sandbox.clone_path.join("post-merge-ran.sentinel");
+    let wt_toml = format!(
+        "[[post-merge]]\nsentinel = \"touch {}\"\n",
+        sentinel.to_str().unwrap()
+    );
+    std::fs::create_dir_all(sandbox.clone_path.join(".config")).expect("mkdir .config");
+    std::fs::write(sandbox.clone_path.join(".config/wt.toml"), wt_toml).expect("write wt.toml");
+    sandbox.git(&["add", ".config/wt.toml"]);
+    sandbox.git(&["commit", "--quiet", "-m", "add post-merge hook"]);
+    sandbox.git(&["push", "--quiet", "origin", "main"]);
+
+    let wt_path = make_feature_worktree(&sandbox, "feat/post-merge-hooks");
+    commit_in(&wt_path, "x.txt", "hello", "feat: add x");
+
+    // Merge WITH hooks enabled (no `--no-hooks`), pre-approved via `--yes`.
+    let output = wt_command()
+        .current_dir(&wt_path)
+        .env("WORKTRUNK_CONFIG_PATH", env.config_path.path())
+        .args(["merge", "main", "--yes"])
+        .output()
+        .expect("wt merge");
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_outcome_contains(&combined, "RemoteSquashed");
+    assert!(
+        sentinel.exists(),
+        "post-merge hook did not run after reconcile merge (BRW-XZZCYC); output:\n{combined}"
+    );
+    assert!(
+        !wt_path.exists(),
+        "feature worktree was not cleaned up after reconcile merge (BRW-XZZCYC); output:\n{combined}"
+    );
+    assert_main_worktree_clean_after_merge(&sandbox);
+}

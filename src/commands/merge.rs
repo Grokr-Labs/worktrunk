@@ -196,6 +196,16 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
         false // No dirty changes or --no-commit
     };
 
+    // BRW-D4W7JL: when push_to_origin delegates the squash to the provider, the
+    // provider merges the PR branch (origin/<branch>) — NOT local HEAD. The local
+    // squash below creates a non-fast-forwardable divergence, so any local commit
+    // not already on the PR branch would be SILENTLY DROPPED. Reconcile the PR
+    // branch now, while the fast-forward relationship still holds: auto-push when
+    // it's a clean fast-forward, fail loud otherwise.
+    if resolved.merge.push_to_origin() {
+        ensure_pr_branch_has_local_commits(repo, &current_branch, current_wt.is_dirty()?)?;
+    }
+
     // Squash commits if enabled - track whether squashing occurred
     let squashed = if squash_enabled {
         matches!(
@@ -227,22 +237,45 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
         false // Already rebased, no rebase occurred
     };
 
-    // Remote reconciliation: push feature branch to origin with divergence-
-    // aware strategy. Runs before pre-merge hooks so any project-level push
-    // hook left in place sees an already-in-sync remote and no-ops.
+    // Target worktree path for template variables (pre-merge and post-merge hooks).
+    // Computed once here so all hook sites can reference it.
+    let target_wt_path_str = target_worktree_path
+        .as_deref()
+        .map(|p| worktrunk::path::to_posix_path(&p.to_string_lossy()));
+
+    // Pre-merge checks run BEFORE the irreversible merge so they actually gate it.
+    // Previously these ran after reconcile_and_push — i.e. after the provider had
+    // already squash-merged, too late to gate — and the old reconcile short-circuit
+    // skipped them entirely (BRW-XZZCYC). Validates the final squashed/rebased state.
+    if verify {
+        let ctx = env.context(yes);
+        let mut extra: Vec<(&str, &str)> = vec![("target", target_branch.as_str())];
+        if let Some(ref p) = target_wt_path_str {
+            extra.push(("target_worktree_path", p));
+        }
+        execute_hook(
+            &ctx,
+            HookType::PreMerge,
+            &extra,
+            FailureStrategy::FailFast,
+            &[],
+            crate::output::pre_hook_display_path(ctx.worktree_path),
+        )?;
+    }
+
+    // Remote reconciliation: push the feature branch to origin with a divergence-
+    // aware strategy and let the provider squash-merge it.
     //
     // Defaults:
-    //   - Humans (interactive): opt-in via `[merge] push_to_origin = true`,
-    //     preserving the pre-0.38 default where origin push is the project's
-    //     own `[[pre-merge]]` hook.
-    //   - Agent sessions (WT_HOOK_CONTEXT or CLAUDE_AGENT_ID in env): on by
-    //     default, so swarm workflows get divergence reconciliation without
-    //     per-project config. Explicit `push_to_origin = false` still wins.
+    //   - Humans (interactive): opt-in via `[merge] push_to_origin = true`.
+    //   - Agent sessions (WT_HOOK_CONTEXT or CLAUDE_AGENT_ID in env): on by default.
+    //     Explicit `push_to_origin = false` still wins.
     //
-    // Every non-error outcome of `reconcile_and_push` means GitHub has already
-    // squash-merged the feature into the target and deleted the branch —
-    // skip the local-merge phase below and let the post-merge sync hook pull
-    // the new target commit.
+    // When taken, the provider has already merged the feature into the target, so
+    // the redundant local-merge step is skipped — but worktree cleanup and
+    // post-merge hooks below STILL run (BRW-XZZCYC). Only an OpenedDraftPr short-
+    // circuits, because no merge happened.
+    let mut remote_merged = false;
     if resolved.merge.push_to_origin() {
         let outcome = reconcile_and_push(
             repo,
@@ -267,55 +300,30 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
         }
         eprintln!(
             "{}",
-            info_message("GitHub completed the squash-merge; skipping local merge phase.")
+            info_message(
+                "Provider completed the squash-merge; skipping the redundant local merge."
+            )
         );
         if let Some(pr_number) = squash_pr_number(&outcome) {
             emit_post_merge_summary(repo, &target_branch, pr_number);
         }
-        // Intentional: we skip the rest of handle_merge because the
-        // target branch is already updated on origin. Short-circuit avoids
-        // the local handle_push step (which would try to re-push the same
-        // content wt just pushed + merged) and leaves worktree cleanup,
-        // PR close, and post-merge hooks to the caller's next pipeline.
-        return Ok(());
+        remote_merged = true;
     }
 
-    // Target worktree path for template variables (pre-merge and post-merge hooks).
-    // Computed once here so both hook sites can reference it.
-    let target_wt_path_str = target_worktree_path
-        .as_deref()
-        .map(|p| worktrunk::path::to_posix_path(&p.to_string_lossy()));
-
-    // Run pre-merge checks unless --no-hooks was specified
-    // Do this after commit/squash/rebase to validate the final state that will be pushed
-    if verify {
-        let ctx = env.context(yes);
-        let mut extra: Vec<(&str, &str)> = vec![("target", target_branch.as_str())];
-        if let Some(ref p) = target_wt_path_str {
-            extra.push(("target_worktree_path", p));
+    // Merge to target branch — skipped when the provider already merged it above.
+    if !remote_merged {
+        let operations = Some(MergeOperations {
+            committed,
+            squashed,
+            rebased,
+        });
+        if !ff {
+            // Create a merge commit on the target branch via commit-tree + update-ref
+            handle_no_ff_merge(Some(&target_branch), operations, &current_branch)?;
+        } else {
+            // Fast-forward push to target branch
+            handle_push(Some(&target_branch), "Merged to", operations)?;
         }
-        execute_hook(
-            &ctx,
-            HookType::PreMerge,
-            &extra,
-            FailureStrategy::FailFast,
-            &[],
-            crate::output::pre_hook_display_path(ctx.worktree_path),
-        )?;
-    }
-
-    // Merge to target branch
-    let operations = Some(MergeOperations {
-        committed,
-        squashed,
-        rebased,
-    });
-    if !ff {
-        // Create a merge commit on the target branch via commit-tree + update-ref
-        handle_no_ff_merge(Some(&target_branch), operations, &current_branch)?;
-    } else {
-        // Fast-forward push to target branch
-        handle_push(Some(&target_branch), "Merged to", operations)?;
     }
 
     // Destination: prefer the target branch's worktree; fall back to home path.
@@ -438,6 +446,60 @@ pub fn handle_merge(opts: MergeOptions<'_>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// BRW-D4W7JL: ensure `origin/<branch>` contains every local commit before a
+/// `push_to_origin` squash-merge, which merges the PR branch (not local HEAD).
+///
+/// Runs before the local squash, while the fast-forward relationship still holds:
+///   - PR branch absent → no-op (reconcile's FirstPush pushes everything).
+///   - PR branch already contains local HEAD (clean tree) → no-op (reconcile
+///     handles AlreadyPushed / remote-Ahead-rebase).
+///   - Local is a clean fast-forward ahead of the PR branch → auto-push it, so
+///     the provider squashes the complete set.
+///   - Uncommitted changes over an existing PR branch, or genuinely diverged
+///     histories → fail loud (the squash-merge would drop local content).
+fn ensure_pr_branch_has_local_commits(
+    repo: &Repository,
+    branch: &str,
+    dirty: bool,
+) -> anyhow::Result<()> {
+    let remote_ref = format!("origin/{branch}");
+
+    // PR branch doesn't exist yet → reconcile's FirstPush will push everything.
+    // `rev-parse --verify --quiet` exits non-zero (→ Err) when the ref is absent.
+    if repo
+        .run_command(&["rev-parse", "--verify", "--quiet", &remote_ref])
+        .is_err()
+    {
+        return Ok(());
+    }
+
+    // HEAD ⊆ origin/<branch>: the remote already has all our commits.
+    if repo.is_ancestor("HEAD", &remote_ref)? && !dirty {
+        return Ok(());
+    }
+
+    // origin/<branch> ⊆ HEAD: fast-forward is safe (PR branch is an ancestor).
+    if repo.is_ancestor(&remote_ref, "HEAD")? {
+        if dirty {
+            anyhow::bail!(
+                "Uncommitted changes won't reach {remote_ref}: a push_to_origin merge \
+                 squashes the pushed PR branch, so they would be silently dropped. \
+                 Commit them (wt will push) before merging."
+            );
+        }
+        // Auto-push the local commits onto the PR branch (plain fast-forward).
+        repo.run_command(&["push", "origin", &format!("HEAD:{branch}")])?;
+        return Ok(());
+    }
+
+    // Neither contains the other → diverged; the remote has commits we lack.
+    anyhow::bail!(
+        "Local branch and {remote_ref} have diverged — the remote has commits not in \
+         your history, so a squash-merge would drop your local commits. Rebase onto \
+         {remote_ref} (or reconcile manually) before merging."
+    )
+}
+
 /// Extract the squashed PR number from a successful `ReconcileOutcome`
 /// (BRW-2GX4LP). Returns `None` for the draft-PR variant since no merge happened.
 fn squash_pr_number(outcome: &super::worktree::ReconcileOutcome) -> Option<u32> {
@@ -505,4 +567,91 @@ fn pr_view_url(repo: &Repository, pr_number: u32) -> Option<String> {
     }
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if url.is_empty() { None } else { Some(url) }
+}
+
+#[cfg(test)]
+mod commit_loss_guard_tests {
+    use super::*;
+    use worktrunk::testing::TestRepo;
+
+    /// Standard repo + bare origin + a `feature` worktree with one commit (A) on
+    /// top of main. The feature branch is NOT yet pushed.
+    fn setup() -> (TestRepo, std::path::PathBuf) {
+        let mut t = TestRepo::standard();
+        t.setup_remote("main");
+        let wt = t.add_worktree_with_commit("feature", "f.txt", "v1", "commit A");
+        (t, wt)
+    }
+
+    fn rev(repo: &Repository, refname: &str) -> String {
+        repo.run_command(&["rev-parse", refname])
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn noop_when_pr_branch_absent() {
+        // Never pushed → reconcile's FirstPush will push everything; guard no-ops.
+        let (_t, wt) = setup();
+        let repo = Repository::at(&wt).unwrap();
+        assert!(
+            repo.run_command(&["rev-parse", "--verify", "--quiet", "origin/feature"])
+                .is_err()
+        );
+        ensure_pr_branch_has_local_commits(&repo, "feature", false).unwrap();
+    }
+
+    #[test]
+    fn auto_pushes_local_commits_not_on_pr_branch() {
+        // The flag-#1 scenario: PR branch pushed, then a local commit added.
+        let (t, wt) = setup();
+        t.run_git_in(&wt, &["push", "origin", "feature"]); // origin/feature = A
+        std::fs::write(wt.join("f.txt"), "v2").unwrap();
+        t.run_git_in(&wt, &["add", "f.txt"]);
+        t.run_git_in(&wt, &["commit", "-m", "commit B"]); // local HEAD = B (unpushed)
+
+        let repo = Repository::at(&wt).unwrap();
+        assert_ne!(rev(&repo, "origin/feature"), rev(&repo, "HEAD"));
+        ensure_pr_branch_has_local_commits(&repo, "feature", false).unwrap();
+        // B preserved: the PR branch fast-forwarded to HEAD.
+        assert_eq!(rev(&repo, "origin/feature"), rev(&repo, "HEAD"));
+    }
+
+    #[test]
+    fn noop_when_already_pushed_and_clean() {
+        let (t, wt) = setup();
+        t.run_git_in(&wt, &["push", "origin", "feature"]);
+        let repo = Repository::at(&wt).unwrap();
+        let before = rev(&repo, "origin/feature");
+        ensure_pr_branch_has_local_commits(&repo, "feature", false).unwrap();
+        assert_eq!(rev(&repo, "origin/feature"), before);
+    }
+
+    #[test]
+    fn fails_loud_when_diverged() {
+        let (t, wt) = setup();
+        t.run_git_in(&wt, &["push", "origin", "feature"]); // origin/feature = A
+        // Rewrite local feature to a different commit C (not a descendant of A).
+        std::fs::write(wt.join("f.txt"), "v-amended").unwrap();
+        t.run_git_in(&wt, &["add", "f.txt"]);
+        t.run_git_in(&wt, &["commit", "--amend", "-m", "commit C"]);
+
+        let repo = Repository::at(&wt).unwrap();
+        let err = ensure_pr_branch_has_local_commits(&repo, "feature", false).unwrap_err();
+        assert!(err.to_string().contains("diverged"), "got: {err}");
+    }
+
+    #[test]
+    fn fails_loud_on_dirty_over_pushed_branch() {
+        // Uncommitted changes would be squash-committed locally then dropped by the
+        // provider squash-merge of the (clean) PR branch.
+        let (t, wt) = setup();
+        t.run_git_in(&wt, &["push", "origin", "feature"]); // origin/feature == HEAD
+        std::fs::write(wt.join("f.txt"), "dirty-uncommitted").unwrap();
+
+        let repo = Repository::at(&wt).unwrap();
+        let err = ensure_pr_branch_has_local_commits(&repo, "feature", true).unwrap_err();
+        assert!(err.to_string().contains("Uncommitted"), "got: {err}");
+    }
 }
