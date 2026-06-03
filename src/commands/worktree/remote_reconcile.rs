@@ -36,11 +36,14 @@ pub enum RemoteState {
     /// `origin/<branch>` points at the same commit as local HEAD. No-op.
     InSync,
 
-    /// Local and remote share a base but have diverged: remote has `behind`
-    /// commits not in local, local has `ahead` commits not in remote. When
-    /// `behind == 0` the push is a fast-forward (not reached here — the
-    /// caller treats that as a normal push). When `behind > 0` this is the
-    /// collision that needs reconciliation.
+    /// Local is strictly ahead of `origin/<branch>` (every remote commit is in
+    /// local history; local has more). A plain fast-forward push lands them —
+    /// no rebase, no server-side squash of stale content.
+    LocalAhead,
+
+    /// Local and remote have genuinely diverged: remote has `behind > 0` commits
+    /// not in local AND local has `ahead > 0` commits not in remote. This is the
+    /// collision that needs reconciliation (rebase / restack / remote-squash).
     Diverges { behind: u32, ahead: u32 },
 
     /// Remote is strictly ahead of local (someone pushed while we were
@@ -82,6 +85,9 @@ pub fn classify_remote_state(repo: &Repository, branch: &str) -> anyhow::Result<
 
     if ahead == 0 && behind > 0 {
         Ok(RemoteState::Ahead)
+    } else if behind == 0 && ahead > 0 {
+        // Clean fast-forward: every remote commit is in local history.
+        Ok(RemoteState::LocalAhead)
     } else {
         Ok(RemoteState::Diverges { behind, ahead })
     }
@@ -107,6 +113,9 @@ pub enum ReconcileOutcome {
 
     /// Remote already matched local; no push needed, ran GitHub squash-merge.
     AlreadyPushed { pr_number: u32 },
+
+    /// Local was strictly ahead; fast-forward pushed it, ran GitHub squash-merge.
+    FastForwardPushed { pr_number: u32 },
 
     /// Remote was ahead; rebased local onto remote, pushed, ran GitHub
     /// squash-merge.
@@ -151,11 +160,12 @@ pub fn reconcile_and_push(
     strategy: RemoteDivergenceStrategy,
     auto_open_pr_if_missing: bool,
     draft: bool,
+    squash_message: Option<&str>,
 ) -> anyhow::Result<ReconcileOutcome> {
     let state = classify_remote_state(repo, branch)?;
 
     // Handle the diverged paths up front — Restack and Abort don't share the
-    // Absent/InSync/Ahead terminal (they take their own code path).
+    // Absent/InSync/LocalAhead/Ahead terminal (they take their own code path).
     if let RemoteState::Diverges { .. } = state {
         match strategy {
             RemoteDivergenceStrategy::Restack => {
@@ -172,14 +182,19 @@ pub fn reconcile_and_push(
         }
     }
 
-    // Push the feature branch so the PR references the final (local) squash
-    // commit. RemoteSquash on a diverged remote is the exception handled above.
+    // Push the feature branch so the PR references all local commits. The
+    // RemoteSquash-on-diverged case is the exception handled above.
     match &state {
         RemoteState::Absent => {
             repo.run_command(&["push", "-u", "origin", branch])
                 .context("initial push to origin failed")?;
         }
         RemoteState::InSync => { /* remote already matches local */ }
+        RemoteState::LocalAhead => {
+            // Clean fast-forward — push the extra local commits onto the PR branch.
+            repo.run_command(&["push", "origin", branch])
+                .context("fast-forward push to origin failed")?;
+        }
         RemoteState::Ahead => {
             repo.run_command(&["rebase", &format!("origin/{branch}")])
                 .context("rebase onto origin/<branch> failed")?;
@@ -190,10 +205,18 @@ pub fn reconcile_and_push(
     }
 
     // Single terminal step shared by every "push-then-merge" outcome.
-    match finalize_via_github(repo, branch, target_branch, auto_open_pr_if_missing, draft)? {
+    match finalize_via_github(
+        repo,
+        branch,
+        target_branch,
+        auto_open_pr_if_missing,
+        draft,
+        squash_message,
+    )? {
         FinalizeOutcome::Merged(pr_number) => Ok(match state {
             RemoteState::Absent => ReconcileOutcome::FirstPush { pr_number },
             RemoteState::InSync => ReconcileOutcome::AlreadyPushed { pr_number },
+            RemoteState::LocalAhead => ReconcileOutcome::FastForwardPushed { pr_number },
             RemoteState::Ahead => ReconcileOutcome::RebasedAndPushed { pr_number },
             RemoteState::Diverges { .. } => ReconcileOutcome::RemoteSquashed { pr_number },
         }),
@@ -228,10 +251,14 @@ fn finalize_via_github(
     target_branch: &str,
     auto_open_pr_if_missing: bool,
     draft: bool,
+    squash_message: Option<&str>,
 ) -> anyhow::Result<FinalizeOutcome> {
     let (pr_number, just_opened_draft) = match find_open_pr(repo, branch)? {
         Some(n) => (n, false),
-        None if auto_open_pr_if_missing => (open_pr(repo, branch, target_branch, draft)?, draft),
+        None if auto_open_pr_if_missing => (
+            open_pr(repo, branch, target_branch, draft, squash_message)?,
+            draft,
+        ),
         None => {
             return Err(anyhow!(
                 "wt merge expected an open PR for branch '{branch}' targeting '{target_branch}', \
@@ -248,7 +275,7 @@ and `auto_open_pr_if_missing` is disabled. Either open one manually \
         return Ok(FinalizeOutcome::OpenedDraft(pr_number));
     }
 
-    squash_merge_pr_via_api(repo, pr_number, branch)
+    squash_merge_pr_via_api(repo, pr_number, branch, squash_message)
         .context("squash-merge via GitHub REST API failed")?;
 
     advance_target_branch(repo, target_branch)?;
@@ -303,23 +330,36 @@ fn advance_target_branch(repo: &Repository, target_branch: &str) -> anyhow::Resu
 /// holds the target. REST calls are worktree-independent.
 ///
 /// `gh api` substitutes `:owner` / `:repo` from the repo's primary remote.
-fn squash_merge_pr_via_api(repo: &Repository, pr_number: u32, branch: &str) -> anyhow::Result<()> {
+fn squash_merge_pr_via_api(
+    repo: &Repository,
+    pr_number: u32,
+    branch: &str,
+    squash_message: Option<&str>,
+) -> anyhow::Result<()> {
     // PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge with
-    // merge_method=squash. GitHub uses the PR title + body as the squash
-    // commit message by default, which matches `gh pr merge --squash`
-    // behavior from a user's perspective.
-    gh(
-        repo,
-        &[
-            "api",
-            "-X",
-            "PUT",
-            &pr_merge_api_path(pr_number),
-            "-f",
-            "merge_method=squash",
-        ],
-    )
-    .context("squash-merge PUT returned non-success")?;
+    // merge_method=squash. When `squash_message` is provided (the locally
+    // generated squash message — see push_to_origin in `wt merge`), pass it as
+    // commit_title + commit_message so the squash commit carries it even on
+    // re-merges where the PR title is stale. Otherwise GitHub falls back to the
+    // PR title + body.
+    let path = pr_merge_api_path(pr_number);
+    let mut args: Vec<String> = vec![
+        "api".into(),
+        "-X".into(),
+        "PUT".into(),
+        path,
+        "-f".into(),
+        "merge_method=squash".into(),
+    ];
+    if let Some(msg) = squash_message {
+        let (title, body) = msg.split_once('\n').unwrap_or((msg, ""));
+        args.push("-f".into());
+        args.push(format!("commit_title={}", title.trim()));
+        args.push("-f".into());
+        args.push(format!("commit_message={}", body.trim_start()));
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    gh(repo, &arg_refs).context("squash-merge PUT returned non-success")?;
 
     // DELETE /repos/{owner}/{repo}/git/refs/heads/{branch}. Tolerate the case
     // where the branch is already gone (e.g., the squash-merge above already
@@ -416,7 +456,7 @@ collision. Tree unchanged; recreated on `{new_branch}` with a single squash comm
     // completes the full cycle rather than leaving a PR open for human
     // attention. Uses the REST API to avoid the local-checkout-of-target
     // failure `gh pr merge` hits in multi-worktree setups.
-    squash_merge_pr_via_api(repo, new_pr, &new_branch)
+    squash_merge_pr_via_api(repo, new_pr, &new_branch, None)
         .context("failed to squash-merge replacement PR")?;
     advance_target_branch(repo, target_branch)?;
 
@@ -475,13 +515,22 @@ fn open_pr(
     branch: &str,
     target_branch: &str,
     draft: bool,
+    squash_message: Option<&str>,
 ) -> anyhow::Result<u32> {
-    let title = commit_subject(repo, "HEAD")?;
-    let body = format!(
+    // Prefer the locally generated squash message (subject + body) when present;
+    // it's what the server-side squash will use as the commit message. Fall back
+    // to the HEAD subject + a generic body otherwise.
+    let default_body = format!(
         "Auto-opened by `wt merge` for remote-squash reconciliation. Feature branch `{branch}` \
-has pre-squash commits on origin; server-side squash-merge will collapse them into one commit \
-on `{target_branch}`."
+will be collapsed into one commit on `{target_branch}` by the server-side squash-merge."
     );
+    let (title, body) = match squash_message {
+        Some(msg) => {
+            let (subject, rest) = msg.split_once('\n').unwrap_or((msg, ""));
+            (subject.trim().to_string(), rest.trim_start().to_string())
+        }
+        None => (commit_subject(repo, "HEAD")?, default_body),
+    };
     let mut args = vec!["pr", "create"];
     if draft {
         args.push("--draft");
@@ -584,6 +633,93 @@ fn gh(repo: &Repository, args: &[&str]) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use worktrunk::testing::TestRepo;
+
+    /// Repo + bare origin + a `feature` worktree with one commit, pushed to origin.
+    fn pushed_feature() -> (TestRepo, std::path::PathBuf) {
+        let mut t = TestRepo::standard();
+        t.setup_remote("main");
+        let wt = t.add_worktree_with_commit("feature", "f.txt", "v1", "commit A");
+        t.run_git_in(&wt, &["push", "-u", "origin", "feature"]);
+        (t, wt)
+    }
+
+    #[test]
+    fn classify_absent_when_branch_never_pushed() {
+        let mut t = TestRepo::standard();
+        t.setup_remote("main");
+        let wt = t.add_worktree_with_commit("feature", "f.txt", "v1", "commit A");
+        let repo = Repository::at(&wt).unwrap();
+        assert_eq!(
+            classify_remote_state(&repo, "feature").unwrap(),
+            RemoteState::Absent
+        );
+    }
+
+    #[test]
+    fn classify_in_sync_when_pushed_and_unchanged() {
+        let (_t, wt) = pushed_feature();
+        let repo = Repository::at(&wt).unwrap();
+        assert_eq!(
+            classify_remote_state(&repo, "feature").unwrap(),
+            RemoteState::InSync
+        );
+    }
+
+    #[test]
+    fn classify_local_ahead_on_clean_fast_forward() {
+        // The case the old code mis-reported as Diverges{behind:0,..} and then
+        // remote-squashed (dropping the new commit). Must now be LocalAhead.
+        let (t, wt) = pushed_feature();
+        std::fs::write(wt.join("f.txt"), "v2").unwrap();
+        t.run_git_in(&wt, &["add", "f.txt"]);
+        t.run_git_in(&wt, &["commit", "-m", "commit B (unpushed)"]);
+        let repo = Repository::at(&wt).unwrap();
+        assert_eq!(
+            classify_remote_state(&repo, "feature").unwrap(),
+            RemoteState::LocalAhead
+        );
+    }
+
+    #[test]
+    fn classify_ahead_when_remote_advanced_and_local_behind() {
+        let (t, wt) = pushed_feature();
+        let repo = Repository::at(&wt).unwrap();
+        // Advance origin/feature, then reset local back so it's strictly behind.
+        let local_a = repo.run_command(&["rev-parse", "HEAD"]).unwrap();
+        let local_a = local_a.trim();
+        std::fs::write(wt.join("f.txt"), "remote-v2").unwrap();
+        t.run_git_in(&wt, &["add", "f.txt"]);
+        t.run_git_in(&wt, &["commit", "-m", "remote commit"]);
+        t.run_git_in(&wt, &["push", "origin", "feature"]);
+        t.run_git_in(&wt, &["reset", "--hard", local_a]); // local strictly behind
+        assert_eq!(
+            classify_remote_state(&repo, "feature").unwrap(),
+            RemoteState::Ahead
+        );
+    }
+
+    #[test]
+    fn classify_diverges_when_both_sides_have_unique_commits() {
+        let (t, wt) = pushed_feature();
+        let repo = Repository::at(&wt).unwrap();
+        let local_a = repo.run_command(&["rev-parse", "HEAD"]).unwrap();
+        let local_a = local_a.trim();
+        // Push a remote-only commit.
+        std::fs::write(wt.join("f.txt"), "remote-v2").unwrap();
+        t.run_git_in(&wt, &["add", "f.txt"]);
+        t.run_git_in(&wt, &["commit", "-m", "remote commit"]);
+        t.run_git_in(&wt, &["push", "origin", "feature"]);
+        // Reset local back and make a DIFFERENT local-only commit.
+        t.run_git_in(&wt, &["reset", "--hard", local_a]);
+        std::fs::write(wt.join("g.txt"), "local-only").unwrap();
+        t.run_git_in(&wt, &["add", "g.txt"]);
+        t.run_git_in(&wt, &["commit", "-m", "local commit"]);
+        assert!(matches!(
+            classify_remote_state(&repo, "feature").unwrap(),
+            RemoteState::Diverges { behind, ahead } if behind > 0 && ahead > 0
+        ));
+    }
 
     #[test]
     fn parse_pr_number_from_numeric_input() {
