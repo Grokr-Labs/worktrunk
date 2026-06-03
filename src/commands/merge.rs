@@ -465,28 +465,27 @@ fn ensure_pr_branch_has_local_commits(
     let remote_ref = format!("origin/{branch}");
 
     // PR branch doesn't exist yet → reconcile's FirstPush will push everything.
-    // `rev-parse --verify --quiet` exits non-zero (→ Err) when the ref is absent.
-    if repo
-        .run_command(&["rev-parse", "--verify", "--quiet", &remote_ref])
-        .is_err()
-    {
+    if !repo.ref_exists(&remote_ref)? {
         return Ok(());
     }
 
-    // HEAD ⊆ origin/<branch>: the remote already has all our commits.
-    if repo.is_ancestor("HEAD", &remote_ref)? && !dirty {
-        return Ok(());
-    }
+    let remote_has_local = repo.is_ancestor("HEAD", &remote_ref)?; // HEAD ⊆ origin/<branch>
+    let pr_branch_is_ancestor = repo.is_ancestor(&remote_ref, "HEAD")?; // FF-safe
 
-    // origin/<branch> ⊆ HEAD: fast-forward is safe (PR branch is an ancestor).
-    if repo.is_ancestor(&remote_ref, "HEAD")? {
-        if dirty {
-            anyhow::bail!(
-                "Uncommitted changes won't reach {remote_ref}: a push_to_origin merge \
-                 squashes the pushed PR branch, so they would be silently dropped. \
-                 Commit them (wt will push) before merging."
-            );
-        }
+    // Uncommitted changes are squash-committed locally, but the provider merges the
+    // *pushed* PR branch — so they'd be silently dropped. Once a PR branch exists,
+    // dirty always means loss; fail loud regardless of ancestry.
+    if dirty {
+        anyhow::bail!(
+            "Uncommitted changes won't reach {remote_ref}: a push_to_origin merge \
+             squashes the pushed PR branch, so they would be silently dropped. \
+             Commit them (wt will push) before merging."
+        );
+    }
+    if remote_has_local {
+        return Ok(()); // remote already has all our commits
+    }
+    if pr_branch_is_ancestor {
         // Auto-push the local commits onto the PR branch (plain fast-forward).
         repo.run_command(&["push", "origin", &format!("HEAD:{branch}")])?;
         return Ok(());
