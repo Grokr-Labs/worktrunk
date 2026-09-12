@@ -349,7 +349,84 @@ pub(crate) fn execute_llm_command(command: &str, prompt: &str) -> anyhow::Result
         .into());
     }
 
+    if looks_like_prompt_echo(&message, prompt) {
+        return Err(worktrunk::git::GitError::Other {
+            message: format!(
+                "LLM echoed its instructions instead of writing a message (first line: {:?}); \
+                 nothing was committed with it. Re-run, or check the commit.generation command",
+                message.lines().next().unwrap_or("")
+            ),
+        }
+        .into());
+    }
+
     Ok(message)
+}
+
+/// Does the generator's output repeat its own instructions instead of a message?
+///
+/// Measured 2026-09-11 (brw-0mr7ot): `claude -p --model=haiku` with an empty system
+/// prompt answered a 2,093-line squash prompt with "Create a commit message for the
+/// combined effect of these commits." and `wt merge` put that on main as the subject.
+/// The default templates carry the instruction inside `<task>…</task>`, so the output is
+/// rejected when it repeats a task sentence (verbatim, or with the leading instruction
+/// verb swapped), when it carries template markup, or when its first line is itself an
+/// instruction to write a commit message.
+pub(crate) fn looks_like_prompt_echo(message: &str, prompt: &str) -> bool {
+    fn normalize(s: &str) -> String {
+        s.to_ascii_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+    fn drop_instruction_verb(s: &str) -> String {
+        const VERBS: [&str; 6] = [
+            "write ",
+            "create ",
+            "generate ",
+            "compose ",
+            "produce ",
+            "draft ",
+        ];
+        let n = normalize(s);
+        VERBS
+            .iter()
+            .find_map(|v| n.strip_prefix(v).map(str::to_string))
+            .unwrap_or(n)
+    }
+
+    if message.contains("<task>") || message.contains("</task>") || message.contains("{{") {
+        return true;
+    }
+    let first = message.lines().next().unwrap_or("").trim();
+    let first_norm = drop_instruction_verb(first);
+
+    let mut rest = prompt;
+    while let Some(start) = rest.find("<task>") {
+        let after = &rest[start + "<task>".len()..];
+        let Some(end) = after.find("</task>") else {
+            break;
+        };
+        for sentence in after[..end].split(['.', '\n']) {
+            let task = drop_instruction_verb(sentence);
+            if task.len() >= 12 && task == first_norm {
+                return true;
+            }
+        }
+        rest = &after[end + "</task>".len()..];
+    }
+
+    let n = normalize(first);
+    [
+        "write a commit message",
+        "create a commit message",
+        "generate a commit message",
+    ]
+    .iter()
+    .any(|p| n.starts_with(p))
 }
 
 /// Template type for selecting the appropriate template source
@@ -1477,5 +1554,42 @@ diff --git a/Cargo.lock b/Cargo.lock
         // Shell metacharacters — needs wrapping
         let result = format_reproduction_command("git diff", "cmd1 && cmd2");
         assert_snapshot!(result, @"git diff | sh -c 'cmd1 && cmd2'");
+    }
+
+    #[test]
+    fn prompt_echo_is_rejected_verbatim_and_with_verb_swapped() {
+        let prompt = DEFAULT_SQUASH_TEMPLATE;
+        assert!(looks_like_prompt_echo(
+            "Write a commit message for the combined effect of these commits.",
+            prompt
+        ));
+        // brw-0mr7ot: haiku swapped the verb and dropped nothing else
+        assert!(looks_like_prompt_echo(
+            "Create a commit message for the combined effect of these commits.",
+            prompt
+        ));
+        assert!(looks_like_prompt_echo("<task>anything</task>", prompt));
+        assert!(looks_like_prompt_echo(
+            "Write a commit message summarising this diff",
+            prompt
+        ));
+    }
+
+    #[test]
+    fn real_subjects_are_not_prompt_echoes() {
+        let prompt = DEFAULT_SQUASH_TEMPLATE;
+        assert!(!looks_like_prompt_echo(
+            "docs(workshop): outbound acts, phases 1-6",
+            prompt
+        ));
+        assert!(!looks_like_prompt_echo(
+            "Add commit message linting to the squash step",
+            prompt
+        ));
+        assert!(!looks_like_prompt_echo(
+            "Reject LLM output that echoes the prompt\n\nThe generator returned its task line.",
+            prompt
+        ));
+        assert!(!looks_like_prompt_echo("Fix", prompt));
     }
 }
