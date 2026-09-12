@@ -1592,4 +1592,54 @@ diff --git a/Cargo.lock b/Cargo.lock
         ));
         assert!(!looks_like_prompt_echo("Fix", prompt));
     }
+
+    #[test]
+    fn verb_swapped_echo_of_a_custom_task_is_rejected() {
+        // A custom template whose task does not mention "commit message": only the
+        // <task> comparison with the instruction verb collapsed can catch this echo.
+        let prompt = "<task>Produce a subject for these commits.</task>\n<diff>x</diff>";
+        assert!(looks_like_prompt_echo(
+            "Write a subject for these commits",
+            prompt
+        ));
+        assert!(looks_like_prompt_echo(
+            "Produce a subject for these commits.",
+            prompt
+        ));
+        assert!(!looks_like_prompt_echo(
+            "Add a subject index for these commits",
+            prompt
+        ));
+    }
+
+    #[test]
+    fn realistic_subjects_survive_the_echo_check() {
+        let prompt = DEFAULT_SQUASH_TEMPLATE;
+        let subjects = [
+            "fix(llm): reject a generated commit message that echoes the prompt",
+            "Add prompt template for squash messages",
+            "Create worktree on switch when missing",
+            "Write directive files atomically",
+            "Generate completions for fish",
+            "Refactor task runner for the docs hook",
+            "docs: describe the commit message template variables",
+            "Handle empty LLM output in commit generation",
+            "chore: bump minijinja",
+            "feat(merge): pass the squash message to the provider",
+            "Fix combined diff stat for renamed files",
+            "Improve the prompt for combined commits",
+            "test: cover the verb-swapped echo case",
+            "Remove the deprecated --no-hooks path",
+            "Squash: keep the first subject when the LLM fails",
+        ];
+        for s in subjects {
+            assert!(!looks_like_prompt_echo(s, prompt), "wrongly rejected: {s}");
+        }
+        // Subjects that ARE instructions about a commit message collide with the generic
+        // check by design; the reviewer must rephrase (the cost of catching the echo).
+        assert!(looks_like_prompt_echo(
+            "Create a commit message template for squash",
+            prompt
+        ));
+    }
 }
