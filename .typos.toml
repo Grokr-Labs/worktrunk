@@ -9,6 +9,8 @@ ede = "ede"  # Part of commit hashes like ede2fd3
 mis = "mis"
 # "PNGs" is correct (Portable Network Graphics plural)
 PNGs = "PNGs"
+# brAInwrap card ids are opaque base-32; typos splits brw-0mr7ot at the digit and reads "ot"
+ot = "ot"
 # Intentional typos in tests for "did you mean?" suggestions
 deplyo = "deplyo"
 comit = "comit"
