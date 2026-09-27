@@ -24,3 +24,14 @@ auto_open_pr_if_missing = true
 push_to_origin = true
 on_diverged_remote = "remote-squash"
 auto_open_pr_if_missing = true
+
+# pwm-os gate integrity (BRW-VDG27R). Copied verbatim from pwm-os
+# scripts/pre-merge-gate-integrity.user-hook.toml at main 9d32e697; that file's
+# header documents the design, genesis-signed approvals, and the lost-key
+# recovery. User hooks run before a project's own hooks and no pwm-os branch can
+# edit this file, so a branch cannot disable the gates that judge it.
+[projects."github.com/Grokr-Labs/pwm-os".pre-commit]
+gate-integrity = '''r={{ remote }}; t={{ target | default(default_branch) }}; git fetch -q --no-tags "$r" "+refs/heads/$t:refs/remotes/$r/$t" || { echo "[gate-integrity] cannot fetch $r/$t; refusing" >&2; exit 1; }; src=$(git show "refs/remotes/$r/$t:scripts/check-pre-merge-gates.py") || { echo "[gate-integrity] checker missing on $r/$t; refusing" >&2; exit 1; }; python3 -I -c "$src" --remote "$r" --target "$t" --branch {{ branch }} --stage pre-commit --approvals "$HOME/.config/worktrunk/pre-merge-gate-approvals.toml"'''
+
+[projects."github.com/Grokr-Labs/pwm-os".pre-merge]
+gate-integrity = '''r={{ remote }}; t={{ target }}; git fetch -q --no-tags "$r" "+refs/heads/$t:refs/remotes/$r/$t" || { echo "[gate-integrity] cannot fetch $r/$t; refusing" >&2; exit 1; }; src=$(git show "refs/remotes/$r/$t:scripts/check-pre-merge-gates.py") || { echo "[gate-integrity] checker missing on $r/$t; refusing" >&2; exit 1; }; python3 -I -c "$src" --remote "$r" --target "$t" --branch {{ branch }} --approvals "$HOME/.config/worktrunk/pre-merge-gate-approvals.toml"'''
