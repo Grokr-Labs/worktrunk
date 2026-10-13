@@ -24,4 +24,3 @@ auto_open_pr_if_missing = true
 push_to_origin = true
 on_diverged_remote = "remote-squash"
 auto_open_pr_if_missing = true
-
