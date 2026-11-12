@@ -16,6 +16,19 @@ push_to_origin = true
 on_diverged_remote = "remote-squash"
 auto_open_pr_if_missing = true
 
+# Novulis-PSA (Novulis delivery platform) — same remote reconciliation as pwm-os.
+[projects."github.com/JonathanWorks/Novulis-PSA".merge]
+push_to_origin = true
+on_diverged_remote = "remote-squash"
+auto_open_pr_if_missing = true
+
+# MovaLab fork (reference and dev data target for Novulis-PSA) — same reconciliation.
+# Without this block `wt merge` advanced only the local main and commits stayed unpublished.
+[projects."github.com/JonathanWorks/MovaLab".merge]
+push_to_origin = true
+on_diverged_remote = "remote-squash"
+auto_open_pr_if_missing = true
+
 # worktrunk fork — same v0.38 reconciliation path. Agent sessions already get
 # this via WT_HOOK_CONTEXT auto-detection; the explicit block ensures human
 # sessions on the worktrunk repo also use update-ref-based main sync instead
